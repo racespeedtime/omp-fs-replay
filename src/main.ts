@@ -24,6 +24,28 @@ interface TickReplayData {
   additional?: unknown;
 }
 
+type TickReplayDataMini = [
+  TickReplayData["tick"],
+  (
+    | [
+        IInCarSync["lrKey"],
+        IInCarSync["udKey"],
+        IInCarSync["keys"],
+        IInCarSync["quaternion"],
+        IInCarSync["position"],
+        IInCarSync["velocity"],
+        IInCarSync["vehicleHealth"],
+        IInCarSync["additionalKey"],
+        IInCarSync["weaponId"],
+        IInCarSync["sirenState"],
+        IInCarSync["landingGearState"],
+        IInCarSync["trainSpeed"]
+      ]
+    | null
+  ),
+  unknown?
+];
+
 // todo录制限制最高64 最低32
 // todo回放限制最低？反正慢放1/4和快放4x
 const recordTickPerSecond = 32;
@@ -41,7 +63,8 @@ const replayNpcPools = new Map<string, Player>();
 const replayVehPools = new Map<string, Vehicle["id"]>();
 const freeNpcPools = new Set<Player>();
 
-const replayVehData = new Map<Vehicle["id"], TickReplayData[] | null>();
+const replayVehData = new Map<Vehicle["id"], TickReplayDataMini[] | null>();
+const replayVehReadFileTimeStamp = new Map<Vehicle["id"], number>();
 
 const recordingVehPlayer = new Map<Vehicle["id"], Player>();
 const recordingVehStartTime = new Map<Vehicle["id"], number>();
@@ -118,17 +141,33 @@ async function readVehicleData(vehicle: Vehicle["id"], tick: number) {
     tick / recordTickPerSecond / recordSingleFileSeconds
   );
   const tickFile = path.resolve(dir, `${dataPack}.json`);
-  let tickDataStr: string = await fs.readFile(tickFile, 'utf8');
-  const lines = tickDataStr.split('\n');
-  tickDataStr = (lines.map((item, index) => {
-    return index >= lines.length - 1 ? item : item + ','
-  }).join("\n"))
-  console.log(tickDataStr)
-  return JSON.parse(tickDataStr);
+  if (!fs.existsSync(tickFile)) {
+    replayCallback();
+    return [];
+  }
+  try {
+    const tickDataStr: string = await fs.readFile(tickFile, "utf8");
+    const tickDataArr: TickReplayDataMini[] = tickDataStr
+      .split("\n")
+      .slice(0, -1)
+      .map((item) => JSON.parse(item));
+    return tickDataArr;
+  } catch (err) {
+    replayCallback();
+    return [];
+  }
 }
 
-function readTickData(dataArr: TickReplayData[], tick: number) {
-  return dataArr.find((item) => item.tick >= tick) || null;
+function readTickData(dataArr: TickReplayDataMini[], tick: number) {
+  const nextTick = dataArr.find((item) => item[0] >= tick);
+  if (nextTick) return nextTick;
+
+  for (let i = dataArr.length; i > 0; i--) {
+    if (dataArr[i] && dataArr[i][1]) {
+      return dataArr[i];
+    }
+  }
+  return null;
 }
 
 async function startReplayPlayerData(fileName: string) {
@@ -147,8 +186,13 @@ async function startReplayPlayerData(fileName: string) {
     color: [-1, -1],
   });
   initVeh.create();
-  replayVehData.set(initVeh.id, null)
-  readyReplayNpc(initVeh, filePath);
+  replayVehData.set(initVeh.id, null);
+  try {
+    readyReplayNpc(initVeh, filePath);
+  } catch (err) {
+    initVeh.destroy();
+    throw err;
+  }
   return initVeh;
 }
 
@@ -189,10 +233,10 @@ async function startRecordingPlayerData(player: Player, fileName: string) {
     {
       recordTickPerSecond,
       recordSingleFileSeconds,
-      vehicle: {
-        modelId: veh.getModel(),
-        color: veh.getColors(),
-      },
+      // vehicle: {
+      //   modelId: veh.getModel(),
+      //   color: veh.getColors(),
+      // },
     },
     { spaces: 2 }
   );
@@ -202,7 +246,7 @@ async function startRecordingPlayerData(player: Player, fileName: string) {
 
 function stopRecordingPlayData(player: Player) {
   // todo 玩家不管在不在车内只要之前有处于录制状态就停止
-  if (!isPlayerRecording(player) || !isPlayerPauseRecording(player)) {
+  if (!isPlayerRecording(player) && !isPlayerPauseRecording(player)) {
     throw new Error("Player is not recording");
   }
 
@@ -243,10 +287,35 @@ async function recordVehicleData(
   const tickFile = path.resolve(dirPath, `${dataPack}.json`);
   // await fs.ensureFile(tickFile);
 
-  const tickData: TickReplayData = { tick, data };
-  if (additional) tickData.additional = additional;
+  const tickData: TickReplayDataMini = [
+    tick,
+    data
+      ? [
+          data["lrKey"],
+          data["udKey"],
+          data["keys"],
+          data["quaternion"].map(
+            (item) => +item.toFixed(3)
+          ) as IInCarSync["quaternion"],
+          data["position"].map(
+            (item) => +item.toFixed(3)
+          ) as IInCarSync["position"],
+          data["velocity"].map(
+            (item) => +item.toFixed(3)
+          ) as IInCarSync["velocity"],
+          +data["vehicleHealth"].toFixed(3),
+          data["additionalKey"],
+          data["weaponId"],
+          data["sirenState"],
+          data["landingGearState"],
+          +data["trainSpeed"].toFixed(3),
+        ]
+      : null,
+  ];
 
-  await fs.writeJSON(tickFile, tickData, { flag: "a" });
+  if (additional) tickData.push(JSON.stringify(additional));
+
+  await fs.writeFile(tickFile, JSON.stringify(tickData) + "\n", { flag: "a" });
 }
 
 PlayerEvent.onStateChange(({ player, newState, oldState, next }) => {
@@ -373,37 +442,61 @@ onIncomingPacket(({ packetId, bs, next }) => {
     }
 
     const nextTimeStamp = recordingVehTimeStamp.get(data.vehicleId) || now;
+    const nextReadFileTimeStamp =
+      replayVehReadFileTimeStamp.get(data.vehicleId) || now;
+
+    const tick = (now - startTime) / recordTickGap;
+
     if (now >= nextTimeStamp) {
       recordingVehTimeStamp.set(data.vehicleId, now + recordTickGap);
-      // const nextReadFileTimeStamp =
-      //   nextTimeStamp + recordTickPerSecond * recordSingleFileSeconds;
-      const tick = (now - startTime) / recordTickGap;
 
-      // if (now >= nextReadFileTimeStamp) {
+      if (now >= nextReadFileTimeStamp) {
+        replayVehReadFileTimeStamp.set(
+          data.vehicleId,
+          nextTimeStamp + recordTickPerSecond * recordSingleFileSeconds
+        );
+
         readVehicleData(data.vehicleId, tick).then((tickDataArr) => {
-          // const tickData = readTickData(res, tick);
-          replayVehData.set(data.vehicleId, tickDataArr);
+          if (tickDataArr.length) {
+            replayVehData.set(data.vehicleId, tickDataArr);
+          }
         });
-      // }
-
-      const overWriteData = replayVehData.get(data.vehicleId);
-      if (!overWriteData || !overWriteData.length) {
-        // 触发下回调，比如没读到是因为暂停或者下车了，开发者可以更新载具的3D文本标签？
-        replayCallback();
-        return false;
       }
-      const lastInCarSyncData = readTickData(overWriteData, tick);
-      if (!lastInCarSyncData || !lastInCarSyncData.data) {
-        // 触发下回调，比如没读到是因为暂停或者下车了，开发者可以更新载具的3D文本标签？
-        replayCallback();
-        return false;
-      }
-      inCarSync.writeSync(lastInCarSyncData.data);
-      replayCallback(); // 主要是为了附加数据，如果有附加数据可以换车或者cp点统计数据改变等
-      return next();
     }
 
-    return false;
+    const overWriteData = replayVehData.get(data.vehicleId);
+    if (!overWriteData || !overWriteData.length) {
+      // 触发下回调，比如没读到是因为暂停或者下车了，开发者可以更新载具的3D文本标签？
+      replayCallback();
+      return next();
+    }
+    const lastInCarSyncData = readTickData(overWriteData, tick);
+    if (!lastInCarSyncData || !lastInCarSyncData[1]) {
+      // 触发下回调，比如没读到是因为暂停或者下车了，开发者可以更新载具的3D文本标签？
+      replayCallback();
+      return next();
+    }
+    const miniData = lastInCarSyncData[1];
+    inCarSync.writeSync({
+      vehicleId: data.vehicleId,
+      lrKey: miniData[0],
+      udKey: miniData[1],
+      keys: miniData[2],
+      quaternion: miniData[3],
+      position: miniData[4],
+      velocity: miniData[5],
+      vehicleHealth: miniData[6],
+      playerHealth: 100,
+      armour: 0,
+      additionalKey: miniData[7],
+      weaponId: miniData[8],
+      sirenState: miniData[9],
+      landingGearState: miniData[10],
+      trailerId: 0,
+      trainSpeed: miniData[11],
+    });
+    replayCallback(); // 主要是为了附加数据，如果有附加数据可以换车或者cp点统计数据改变等
+    return next();
   }
   return next();
 });
@@ -445,7 +538,7 @@ PlayerEvent.onCommandText("record", async ({ player, next }) => {
   try {
     await startRecordingPlayerData(player, fileName);
   } catch (err) {
-    player.sendClientMessage("#ff0", JSON.stringify(err));
+    player.sendClientMessage("#ff0", err.message);
   }
   return next();
 });
@@ -456,7 +549,7 @@ PlayerEvent.onCommandText("replay", async ({ player, subcommand, next }) => {
     return next();
   }
   const recordDir = subcommand.join("/");
-  if(!recordDir) {
+  if (!recordDir) {
     player.sendClientMessage("#ff0", "请输入回放文件夹");
     return next();
   }
@@ -466,19 +559,17 @@ PlayerEvent.onCommandText("replay", async ({ player, subcommand, next }) => {
       player.toggleSpectating(true);
       player.spectateVehicle(veh);
     }
-  }
-  catch(err: any) {
-    player.sendClientMessage("#ff0", err.message)
+  } catch (err: any) {
+    player.sendClientMessage("#ff0", err.message);
   }
   return next();
 });
 
-
-PlayerEvent.onConnect(({player, next}) => {
-  if(player.isNpc()) return next();
-  player.charset = 'gbk'
+PlayerEvent.onConnect(({ player, next }) => {
+  if (player.isNpc()) return next();
+  player.charset = "gbk";
   return next();
-})
+});
 
 function replayCallback() {}
 function recordCallback() {}
