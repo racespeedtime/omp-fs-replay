@@ -495,6 +495,7 @@ onIncomingPacket(({ packetId, bs, next }) => {
       recordingVehTimeStamp.set(data.vehicleId, now + recordTickGap);
       const tick = (now - startTime) / recordTickGap;
       console.log(tick);
+      // todo 提供一个对外api，用于调用后记录additionData，等下一个tick的时候，传递过去这个addition然后清掉
       recordVehicleData(data.vehicleId, tick, data);
     }
     return next();
