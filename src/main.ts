@@ -7,6 +7,7 @@ import {
   PlayerEvent,
   PlayerStateEnum,
   Vehicle,
+  defineEvent,
 } from "@infernus/core";
 import {
   IInCarSync,
@@ -46,6 +47,34 @@ type TickReplayDataMini = [
   unknown?
 ];
 
+const [onReplayLoseTick, triggerReplayLoseTick] = defineEvent({
+  name: "OnReplayLoseTick",
+  isNative: false,
+  beforeEach() {
+    return {};
+  },
+});
+
+const [onReplayTick, triggerReplayTick] = defineEvent({
+  name: "OnReplayTick",
+  isNative: false,
+  beforeEach(replayData: TickReplayDataMini) {
+    return {
+      tick: replayData[0],
+      data: replayData[1],
+      additional: replayData[2],
+    };
+  },
+});
+
+const [onReplayReachEnd, triggerReplayReachEnd] = defineEvent({
+  name: "OnReplayReachEnd",
+  isNative: false,
+  beforeEach() {
+    return {};
+  },
+});
+
 // todo录制限制最高64 最低32
 // todo回放限制最低？反正慢放1/4和快放4x
 const recordTickPerSecond = 32;
@@ -65,6 +94,7 @@ const freeNpcPools = new Set<Player>();
 
 const replayVehData = new Map<Vehicle["id"], TickReplayDataMini[] | null>();
 const replayVehReadFileTimeStamp = new Map<Vehicle["id"], number>();
+const replayVehTotalTick = new Map<Vehicle["id"], number>();
 
 const recordingVehPlayer = new Map<Vehicle["id"], Player>();
 const recordingVehStartTime = new Map<Vehicle["id"], number>();
@@ -98,14 +128,34 @@ function isPlayerPauseRecording(player: Player) {
   return getPlayerPauseVeh(player) !== null;
 }
 
-const replayFolder = path.resolve(process.cwd(), "scriptfiles", "replays");
+const currentPath = path.resolve(process.cwd());
+const replayFolder = path.resolve(currentPath, "scriptfiles", "replays");
 fs.ensureDirSync(replayFolder);
 
-function initReplayPools(size = 1) {
-  // todo
-  // 检测samp-npc.exe/samp-npc是否存在
-  // 检测npcmodes/replay_vehicle.amx和子文件夹replay_vehicle.rec是否存在
-  // 检测config.json的max_bots是否为0
+async function initReplayPools(size = 1) {
+  const rootFiles = await fs.readdir(currentPath);
+  if (!rootFiles.some((file) => ["samp-npc.exe", "samp-npc"].includes(file))) {
+    throw new Error("can't find samp-npc file");
+  }
+  const replayAmx = path.resolve(currentPath, "npcmodes", "replay_vehicle.amx");
+  if (!fs.existsSync(replayAmx)) {
+    throw new Error(`can't find ${replayAmx}`);
+  }
+  const replayRec = path.resolve(
+    currentPath,
+    "npcmodes",
+    "recordings",
+    "replay_vehicle.rec"
+  );
+  if (!fs.existsSync(path.resolve(replayRec))) {
+    throw new Error(`can't find ${replayRec}`);
+  }
+  const ompConfig = await fs.readJson(path.resolve(currentPath, "config.json"));
+  if (!ompConfig.max_bots || ompConfig.max_bots <= 0) {
+    throw new Error("max_bots in config.json is 0");
+  } else if (ompConfig.max_bots < size) {
+    throw new Error("max_bots in config.json is less than size");
+  }
   for (let i = 0; i < size; i++) {
     Npc.connectNPC(replayNpcNameStart + i, "replay_vehicle");
   }
@@ -142,7 +192,7 @@ async function readVehicleData(vehicle: Vehicle["id"], tick: number) {
   );
   const tickFile = path.resolve(dir, `${dataPack}.json`);
   if (!fs.existsSync(tickFile)) {
-    replayCallback();
+    triggerReplayLoseTick();
     return [];
   }
   try {
@@ -153,7 +203,7 @@ async function readVehicleData(vehicle: Vehicle["id"], tick: number) {
       .map((item) => JSON.parse(item));
     return tickDataArr;
   } catch (err) {
-    replayCallback();
+    triggerReplayLoseTick();
     return [];
   }
 }
@@ -177,6 +227,24 @@ async function startReplayPlayerData(fileName: string) {
   const { recordTickPerSecond, recordSingleFileSeconds, vehicle } =
     await fs.readJson(configPath);
 
+  const fileNames = await fs.readdir(filePath);
+
+  const dataPacks = fileNames
+    .filter((filename) => !filename.startsWith("config"))
+    .map((filename) => parseInt(filename.replace(/\.json$/, "")));
+
+  const lastDataPack = Math.max(...dataPacks);
+
+  const lastDataPackContent = await fs.readFile(
+    path.resolve(filePath, `${lastDataPack}.json`),
+    "utf8"
+  );
+
+  const lastDataPackTick = +lastDataPackContent.split("\n").slice(-2)[0];
+  if (!lastDataPackTick) {
+    throw new Error("can't find last tick data");
+  }
+
   const initVeh = new Vehicle({
     modelId: 411,
     x: 0,
@@ -186,6 +254,7 @@ async function startReplayPlayerData(fileName: string) {
     color: [-1, -1],
   });
   initVeh.create();
+  replayVehTotalTick.set(initVeh.id, lastDataPackTick);
   replayVehData.set(initVeh.id, null);
   try {
     readyReplayNpc(initVeh, filePath);
@@ -442,13 +511,16 @@ onIncomingPacket(({ packetId, bs, next }) => {
     }
 
     const nextTimeStamp = recordingVehTimeStamp.get(data.vehicleId) || now;
-    const nextReadFileTimeStamp =
-      replayVehReadFileTimeStamp.get(data.vehicleId) || now;
 
     const tick = (now - startTime) / recordTickGap;
 
-    if (now >= nextTimeStamp) {
+    const lastTick = replayVehTotalTick.get(data.vehicleId)!;
+
+    if (tick < lastTick && now >= nextTimeStamp) {
       recordingVehTimeStamp.set(data.vehicleId, now + recordTickGap);
+
+      const nextReadFileTimeStamp =
+        replayVehReadFileTimeStamp.get(data.vehicleId) || now;
 
       if (now >= nextReadFileTimeStamp) {
         replayVehReadFileTimeStamp.set(
@@ -467,15 +539,16 @@ onIncomingPacket(({ packetId, bs, next }) => {
     const overWriteData = replayVehData.get(data.vehicleId);
     if (!overWriteData || !overWriteData.length) {
       // 触发下回调，比如没读到是因为暂停或者下车了，开发者可以更新载具的3D文本标签？
-      replayCallback();
+      triggerReplayLoseTick();
       return next();
     }
     const lastInCarSyncData = readTickData(overWriteData, tick);
     if (!lastInCarSyncData || !lastInCarSyncData[1]) {
       // 触发下回调，比如没读到是因为暂停或者下车了，开发者可以更新载具的3D文本标签？
-      replayCallback();
+      triggerReplayLoseTick();
       return next();
     }
+    // 不能return false不然一直看不到数据包不知道为什么
     const miniData = lastInCarSyncData[1];
     inCarSync.writeSync({
       vehicleId: data.vehicleId,
@@ -495,7 +568,9 @@ onIncomingPacket(({ packetId, bs, next }) => {
       trailerId: 0,
       trainSpeed: miniData[11],
     });
-    replayCallback(); // 主要是为了附加数据，如果有附加数据可以换车或者cp点统计数据改变等
+    if (now >= nextTimeStamp && miniData[2]) {
+      triggerReplayTick(lastInCarSyncData); // 主要是为了附加数据，如果有附加数据可以换车或者cp点统计数据改变等
+    }
     return next();
   }
   return next();
@@ -570,6 +645,3 @@ PlayerEvent.onConnect(({ player, next }) => {
   player.charset = "gbk";
   return next();
 });
-
-function replayCallback() {}
-function recordCallback() {}
