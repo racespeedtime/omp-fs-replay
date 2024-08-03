@@ -48,7 +48,7 @@ export const [onWriteAdditional, triggerWriteAdditional] = defineEvent<{
   player: Player;
   additional: string;
 }>({
-  name: "OnRecordPlayerDisconnect",
+  name: "OnWriteAdditional",
   isNative: false,
   beforeEach(data) {
     return data;

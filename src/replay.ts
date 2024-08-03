@@ -26,7 +26,7 @@ import {
   npcWaitingWorldId,
   recordTickGap,
   replayVehReadFileTimeStamp,
-  replayNpcPools,
+  // replayNpcPools,
   recordOrPauseAdditional,
 } from "./constants";
 import {
@@ -106,6 +106,8 @@ export function readyReplayNpc(
   replayVehPools.set(randNpc.getName(), vehicle.id);
   replayVehData.set(vehicle.id, null);
   replayVehTotalTick.set(vehicle.id, lastDataPackTick);
+
+  return randNpc;
 }
 
 export async function startReplayVehData(fileName: string, initVeh: Vehicle) {
@@ -115,14 +117,14 @@ export async function startReplayVehData(fileName: string, initVeh: Vehicle) {
     throw new Error("can't find last tick data");
   }
   try {
-    readyReplayNpc(initVeh, filePath, config, lastDataPackTick);
+    const npc = readyReplayNpc(initVeh, filePath, config, lastDataPackTick);
+    return { npc, vehicle: initVeh };
   } catch (err) {
     if (initVeh.isValid()) {
       initVeh.destroy();
     }
     throw err;
   }
-  return initVeh;
 }
 
 export function stopReplayVehData(vehicle: Vehicle["id"]) {
@@ -217,11 +219,18 @@ PlayerEvent.onStateChange(({ player, newState, oldState, next }) => {
   }
 
   // 恢复录制 重新赋值vehicleId
-  if (
-    oldState !== PlayerStateEnum.DRIVER &&
-    newState === PlayerStateEnum.DRIVER
-  ) {
+  if (newState === PlayerStateEnum.DRIVER) {
     if (player.isNpc()) {
+      const name = player.getName();
+      const veh = replayVehPools.get(name);
+      if (veh) {
+        const currentVeh = player.getVehicle(Vehicle.getInstances());
+        if (currentVeh && currentVeh.id !== veh) {
+          replayVehPools.set(name, currentVeh.id);
+          replayVehData.set(currentVeh.id, replayVehData.get(veh) || null);
+          replayVehData.delete(veh);
+        }
+      }
       return next();
     }
     const oldVeh = getPlayerPauseVeh(player);
@@ -262,10 +271,12 @@ function putNpcToWaitingPool(npc: Player) {
   const vehId = replayVehPools.get(name);
 
   if (vehId) {
-    replayNpcPools.delete(name);
+    // replayNpcPools.delete(name);
     replayVehData.delete(vehId);
+    replayVehPools.delete(name);
     replayVehReadFileTimeStamp.delete(vehId);
     replayVehTotalTick.delete(vehId);
+    recordOrPauseAdditional.delete(vehId);
 
     const veh = Vehicle.getInstance(vehId);
     if (veh) {
@@ -287,7 +298,6 @@ PlayerEvent.onDisconnect(({ player, next }) => {
 
   if (!isPlayerRecording(player) && !isPlayerPauseRecording(player))
     return next();
-
 
   const recordVeh = getPlayerRecordingVeh(player);
   const pauseVeh = getPlayerPauseVeh(player);
@@ -340,7 +350,7 @@ onIncomingPacket(({ packetId, bs, next }) => {
       recordingVehTimeStamp.set(data.vehicleId, now + recordTickGap);
       const tick = (now - startTime) / recordTickGap;
       console.log(tick);
-      const additional = recordOrPauseAdditional.get(data.vehicleId)
+      const additional = recordOrPauseAdditional.get(data.vehicleId);
       recordVehicleData(data.vehicleId, tick, data, additional);
     }
     return next();

@@ -16,7 +16,7 @@ export const replayNpcNamePrefix = "npc_";
 
 export const waitingNpcPools = new Set<Player>();
 
-export const replayNpcPools = new Map<string, Player>();
+// export const replayNpcPools = new Map<string, Player>();
 export const replayVehPools = new Map<string, Vehicle["id"]>();
 export const replayVehData = new Map<
   Vehicle["id"],
