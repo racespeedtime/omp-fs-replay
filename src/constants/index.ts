@@ -17,7 +17,7 @@ export const replayNpcNamePrefix = "npc_";
 export const waitingNpcPools = new Set<Player>();
 
 // export const replayNpcPools = new Map<string, Player>();
-export const replayVehPools = new Map<string, Vehicle["id"]>();
+export const replayVehPools = new Map<Player['id'], Vehicle["id"]>();
 export const replayVehData = new Map<
   Vehicle["id"],
   TickReplayDataMini[] | null
@@ -25,16 +25,19 @@ export const replayVehData = new Map<
 export const replayVehReadFileTimeStamp = new Map<Vehicle["id"], number>();
 export const replayVehTotalTick = new Map<Vehicle["id"], number>();
 export const replayVehLastTick = new Set<Vehicle["id"]>();
+export const replayVehPauseTick = new Map<Vehicle["id"], number>();
+
+export const recordReplayVehStartTime = new Map<Vehicle["id"], number>();
+export const recordReplayVehTimeStamp = new Map<Vehicle["id"], number>();
 
 export const recordingVehPlayer = new Map<Vehicle["id"], Player>();
-export const recordReplayVehStartTime = new Map<Vehicle["id"], number>();
-export const recordingVehTimeStamp = new Map<Vehicle["id"], number>();
 export const recordingVehFile = new Map<Vehicle["id"], string>();
 
 export const recordOrPauseAdditional = new Map<Vehicle["id"], string>();
 
 export const pauseVehPlayer = new Map<Vehicle["id"], Player>();
+export const pauseVehFile = new Map<Vehicle["id"], string>();
+
 export const pauseVehStartTime = new Map<Vehicle["id"], number>();
 export const pauseVehTimeStamp = new Map<Vehicle["id"], number>();
-export const pauseVehFile = new Map<Vehicle["id"], string>();
 
