@@ -20,7 +20,7 @@ export const [onReplayTick, triggerReplayTick] = defineEvent({
   isNative: false,
   beforeEach(vehicle: number, replayData: TickReplayDataMini) {
     return {
-      vehicle: Vehicle.getInstance(vehicle), 
+      vehicle: Vehicle.getInstance(vehicle)!,
       tick: replayData[0],
       data: replayData[1],
       additional: replayData[2],
@@ -31,8 +31,10 @@ export const [onReplayTick, triggerReplayTick] = defineEvent({
 export const [onReplayReachEnd, triggerReplayReachEnd] = defineEvent({
   name: "OnReplayReachEnd",
   isNative: false,
-  beforeEach() {
-    return {};
+  beforeEach(vehicleId: number) {
+    return {
+      vehicle: Vehicle.getInstance(vehicleId)!,
+    };
   },
 });
 

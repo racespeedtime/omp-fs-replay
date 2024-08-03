@@ -28,11 +28,13 @@ import {
   replayVehReadFileTimeStamp,
   // replayNpcPools,
   recordOrPauseAdditional,
+  replayVehLastTick,
 } from "./constants";
 import {
   onWriteAdditional,
   triggerRecordPlayerDisconnect,
   triggerReplayLoseTick,
+  triggerReplayReachEnd,
   triggerReplayTick,
   triggerWriteAdditional,
 } from "./events";
@@ -97,7 +99,7 @@ export function putNpcToReplay(
     throw new Error("Vehicle is not valid");
   }
   waitingNpcPools.delete(randNpc);
-  
+
   randNpc.setVirtualWorld(npcReplayWorldId);
 
   vehicle.putPlayerIn(randNpc, 0);
@@ -111,13 +113,17 @@ export function putNpcToReplay(
   return randNpc;
 }
 
-export async function startReplayVehData(fileName: string, initVeh: Vehicle, recover?: RecordingRecover) {
-  const { filePath, config, dataPack } = await readDataPack(fileName);
-  const lastDataPackTick = +dataPack.split("\n").slice(-2)[0];
-  if (!lastDataPackTick) {
-    throw new Error("can't find last tick data");
-  }
+export async function startReplayVehData(
+  fileName: string,
+  initVeh: Vehicle,
+  recover?: RecordingRecover
+) {
   try {
+    const { filePath, config, dataPack } = await readDataPack(fileName);
+    const lastDataPackTick = +JSON.parse(dataPack.split("\n").slice(-2)[0])[0];
+    if (!lastDataPackTick) {
+      throw new Error("can't find last tick data");
+    }
     const npc = putNpcToReplay(initVeh, filePath, config, lastDataPackTick);
 
     if (recover) {
@@ -147,7 +153,24 @@ export function stopReplayVehData(vehicle: Vehicle["id"]) {
   veh.destroy();
 
   recordingVehFile.delete(vehicle);
+
   replayVehData.delete(vehicle);
+  replayVehReadFileTimeStamp.delete(vehicle);
+  replayVehTotalTick.delete(vehicle);
+  replayVehLastTick.delete(vehicle);
+  recordReplayVehStartTime.delete(vehicle);
+
+  for (const item of replayVehPools) {
+    if (item[1] === vehicle) {
+      const npcInstance = Player.getInstances().find(
+        (p) => p.isNpc() && p.getName() === item[0]
+      );
+      if (npcInstance) putNpcToWaitingPool(npcInstance);
+
+      replayVehPools.delete(item[0]);
+      break;
+    }
+  }
 }
 
 export async function startRecordVehData(player: Player, fileName: string) {
@@ -199,6 +222,9 @@ export function stopRecordVehData(player: Player) {
 }
 
 PlayerEvent.onStateChange(({ player, newState, oldState, next }) => {
+  if (player.isNpc()) {
+    console.log(player, "bbb");
+  }
   if (
     oldState === PlayerStateEnum.DRIVER &&
     newState !== PlayerStateEnum.DRIVER
@@ -236,6 +262,7 @@ PlayerEvent.onStateChange(({ player, newState, oldState, next }) => {
           replayVehPools.set(name, currentVeh.id);
           replayVehData.set(currentVeh.id, replayVehData.get(veh) || null);
           replayVehData.delete(veh);
+          replayVehLastTick.delete(veh);
         }
       }
       return next();
@@ -271,10 +298,8 @@ PlayerEvent.onStateChange(({ player, newState, oldState, next }) => {
 
 function putNpcToWaitingPool(npc: Player) {
   if (!npc.isNpc()) return;
-
   const name = npc.getName();
   if (!name.startsWith(replayNpcNamePrefix)) return;
-
   const vehId = replayVehPools.get(name);
 
   if (vehId) {
@@ -283,6 +308,7 @@ function putNpcToWaitingPool(npc: Player) {
     replayVehPools.delete(name);
     replayVehReadFileTimeStamp.delete(vehId);
     replayVehTotalTick.delete(vehId);
+    replayVehLastTick.delete(vehId);
     recordOrPauseAdditional.delete(vehId);
 
     const veh = Vehicle.getInstance(vehId);
@@ -379,7 +405,16 @@ onIncomingPacket(({ packetId, bs, next }) => {
 
     const lastTick = replayVehTotalTick.get(data.vehicleId)!;
 
-    if (tick < lastTick && now >= nextTimeStamp) {
+    if (tick >= lastTick) {
+      if (!replayVehLastTick.has(data.vehicleId)) {
+        replayVehLastTick.add(data.vehicleId);
+        triggerReplayReachEnd(data.vehicleId);
+      }
+    } else if (now >= nextTimeStamp) {
+      if (replayVehLastTick.has(data.vehicleId)) {
+        replayVehLastTick.delete(data.vehicleId);
+      }
+
       recordingVehTimeStamp.set(data.vehicleId, now + recordTickGap);
 
       const nextReadFileTimeStamp =

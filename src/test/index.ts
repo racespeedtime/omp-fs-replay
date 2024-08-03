@@ -1,3 +1,4 @@
+import { onReplayReachEnd } from "@/events";
 import {
   initReplayPools,
   isPlayerRecording,
@@ -5,6 +6,7 @@ import {
   stopRecordVehData,
   startRecordVehData,
   startReplayVehData,
+  stopReplayVehData,
 } from "@/replay";
 import { GameMode, Vehicle, PlayerEvent } from "@infernus/core";
 
@@ -48,21 +50,30 @@ PlayerEvent.onCommandText("replay", async ({ player, subcommand, next }) => {
     return next();
   }
   try {
-    const veh = await startReplayVehData(
+    const veh = new Vehicle({
+      modelId: 411,
+      x: 0,
+      y: 0,
+      z: 3,
+      color: [-1, -1],
+      zAngle: 0,
+    });
+    veh.create();
+    veh.addComponent(1010);
+
+    const {npc} = await startReplayVehData(
       recordDir,
-      new Vehicle({
-        modelId: 411,
-        x: 0,
-        y: 0,
-        z: 3,
-        color: [-1, -1],
-        zAngle: 0,
-      }).create()!
+      veh
     );
     if (veh) {
       player.toggleSpectating(true);
       player.spectateVehicle(veh);
     }
+
+    // setTimeout(() => {
+    //   veh.destroy()
+    //   npc.setPos(0, 0, 0);
+    // }, 2000);
   } catch (err: any) {
     player.sendClientMessage("#ff0", err.message);
   }
@@ -74,3 +85,8 @@ PlayerEvent.onConnect(({ player, next }) => {
   player.charset = "gbk";
   return next();
 });
+
+
+onReplayReachEnd(({vehicle}) => {
+  stopReplayVehData(vehicle.id)
+})
