@@ -30,7 +30,10 @@ export const recordingVehStartTime = new Map<Vehicle["id"], number>();
 export const recordingVehTimeStamp = new Map<Vehicle["id"], number>();
 export const recordingVehFile = new Map<Vehicle["id"], string>();
 
+export const recordOrPauseAdditional = new Map<Vehicle["id"], string>();
+
 export const pauseVehPlayer = new Map<Vehicle["id"], Player>();
 export const pauseVehStartTime = new Map<Vehicle["id"], number>();
 export const pauseVehTimeStamp = new Map<Vehicle["id"], number>();
 export const pauseVehFile = new Map<Vehicle["id"], string>();
+

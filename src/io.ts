@@ -5,6 +5,7 @@ import { IInCarSync } from "@infernus/raknet";
 import {
   recordSingleFileSeconds,
   recordTickPerSecond,
+  recordOrPauseAdditional,
   recordingVehFile,
 } from "./constants";
 import { triggerReplayLoseTick } from "./events";
@@ -64,6 +65,7 @@ export async function readDataPack(fileName: string) {
 
 export async function writeRecordConfig(fileName: string, data: any) {
   const filePath = path.resolve(replayFolder, fileName);
+  if (fs.existsSync(filePath)) throw new Error('fileName already exists')
   await fs.ensureDir(filePath);
   const configPath = path.resolve(filePath, "config.json");
   // todo 记录下当前情况下的以便于不同的的tick播放和配置不受影响
@@ -133,8 +135,10 @@ export async function recordVehicleData(
       : null,
   ];
 
-  if (additional) tickData.push(JSON.stringify(additional));
-
+  if (additional) {
+    recordOrPauseAdditional.delete(vehicle);
+    tickData.push(JSON.stringify(additional));
+  } 
   await fs.writeFile(tickFile, JSON.stringify(tickData) + "\n", { flag: "a" });
 }
 

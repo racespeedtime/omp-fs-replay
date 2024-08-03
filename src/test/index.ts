@@ -2,9 +2,9 @@ import {
   initReplayPools,
   isPlayerRecording,
   isPlayerPauseRecording,
-  stopRecordingPlayData,
-  startRecordingPlayerData,
-  startReplayPlayerData,
+  stopRecordVehData,
+  startRecordVehData,
+  startReplayVehData,
 } from "@/replay";
 import { GameMode, Vehicle, PlayerEvent } from "@infernus/core";
 
@@ -25,12 +25,12 @@ GameMode.onInit(({ next }) => {
 
 PlayerEvent.onCommandText("record", async ({ player, next }) => {
   if (isPlayerRecording(player) || isPlayerPauseRecording(player)) {
-    stopRecordingPlayData(player);
+    stopRecordVehData(player);
     return next();
   }
   const fileName = player.getName() + "/" + Date.now();
   try {
-    await startRecordingPlayerData(player, fileName);
+    await startRecordVehData(player, fileName);
   } catch (err: any) {
     player.sendClientMessage("#ff0", err.message);
   }
@@ -48,7 +48,17 @@ PlayerEvent.onCommandText("replay", async ({ player, subcommand, next }) => {
     return next();
   }
   try {
-    const veh = await startReplayPlayerData(recordDir);
+    const veh = await startReplayVehData(
+      recordDir,
+      new Vehicle({
+        modelId: 411,
+        x: 0,
+        y: 0,
+        z: 3,
+        color: [-1, -1],
+        zAngle: 0,
+      }).create()!
+    );
     if (veh) {
       player.toggleSpectating(true);
       player.spectateVehicle(veh);

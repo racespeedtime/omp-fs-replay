@@ -27,8 +27,15 @@ import {
   recordTickGap,
   replayVehReadFileTimeStamp,
   replayNpcPools,
+  recordOrPauseAdditional,
 } from "./constants";
-import { triggerReplayLoseTick, triggerReplayTick } from "./events";
+import {
+  onWriteAdditional,
+  triggerRecordPlayerDisconnect,
+  triggerReplayLoseTick,
+  triggerReplayTick,
+  triggerWriteAdditional,
+} from "./events";
 import {
   checkConfig,
   checkNecessary,
@@ -38,6 +45,7 @@ import {
   recordVehicleData,
   writeRecordConfig,
 } from "./io";
+import { RecordingRecover } from "./interfaces";
 
 export function getPlayerRecordingVeh(player: Player) {
   for (const item of recordingVehPlayer) {
@@ -75,7 +83,12 @@ export function getRandomNpc() {
   return Array.from(waitingNpcPools.values())[random];
 }
 
-export function readyReplayNpc(vehicle: Vehicle, fileName: string) {
+export function readyReplayNpc(
+  vehicle: Vehicle,
+  fileName: string,
+  config: any,
+  lastDataPackTick: number
+) {
   const randNpc = getRandomNpc();
   if (!randNpc) {
     throw new Error("No free NPCs");
@@ -85,40 +98,34 @@ export function readyReplayNpc(vehicle: Vehicle, fileName: string) {
   }
   waitingNpcPools.delete(randNpc);
   randNpc.setVirtualWorld(npcReplayWorldId);
+
   vehicle.putPlayerIn(randNpc, 0);
+
   recordingVehFile.set(vehicle.id, fileName);
+
   replayVehPools.set(randNpc.getName(), vehicle.id);
+  replayVehData.set(vehicle.id, null);
+  replayVehTotalTick.set(vehicle.id, lastDataPackTick);
 }
 
-export async function startReplayPlayerData(fileName: string) {
+export async function startReplayVehData(fileName: string, initVeh: Vehicle) {
   const { filePath, config, dataPack } = await readDataPack(fileName);
-
   const lastDataPackTick = +dataPack.split("\n").slice(-2)[0];
   if (!lastDataPackTick) {
     throw new Error("can't find last tick data");
   }
-
-  const initVeh = new Vehicle({
-    modelId: 411,
-    x: 0,
-    y: 0,
-    z: 3.5,
-    zAngle: 0,
-    color: [-1, -1],
-  });
-  initVeh.create();
-  replayVehTotalTick.set(initVeh.id, lastDataPackTick);
-  replayVehData.set(initVeh.id, null);
   try {
-    readyReplayNpc(initVeh, filePath);
+    readyReplayNpc(initVeh, filePath, config, lastDataPackTick);
   } catch (err) {
-    initVeh.destroy();
+    if (initVeh.isValid()) {
+      initVeh.destroy();
+    }
     throw err;
   }
   return initVeh;
 }
 
-export function stopReplayPlayerData(vehicle: Vehicle["id"]) {
+export function stopReplayVehData(vehicle: Vehicle["id"]) {
   if (!replayVehData.has(vehicle)) {
     throw new Error("vehicle is not in replaying");
   }
@@ -134,10 +141,7 @@ export function stopReplayPlayerData(vehicle: Vehicle["id"]) {
   replayVehData.delete(vehicle);
 }
 
-export async function startRecordingPlayerData(
-  player: Player,
-  fileName: string
-) {
+export async function startRecordVehData(player: Player, fileName: string) {
   if (!player.isInAnyVehicle()) throw new Error("Player is not in a vehicle");
   if (player.getState() !== PlayerStateEnum.DRIVER) {
     throw new Error("Player is not driver");
@@ -161,7 +165,7 @@ export async function startRecordingPlayerData(
   recordingVehPlayer.set(veh.id, player);
 }
 
-export function stopRecordingPlayData(player: Player) {
+export function stopRecordVehData(player: Player) {
   // todo 玩家不管在不在车内只要之前有处于录制状态就停止
   if (!isPlayerRecording(player) && !isPlayerPauseRecording(player)) {
     throw new Error("Player is not recording");
@@ -174,6 +178,7 @@ export function stopRecordingPlayData(player: Player) {
       recordingVehStartTime.delete(veh);
       recordingVehTimeStamp.delete(veh);
       recordingVehFile.delete(veh);
+      recordOrPauseAdditional.delete(veh);
 
       pauseVehPlayer.delete(veh);
       pauseVehStartTime.delete(veh);
@@ -185,13 +190,15 @@ export function stopRecordingPlayData(player: Player) {
 }
 
 PlayerEvent.onStateChange(({ player, newState, oldState, next }) => {
-  if (player.isNpc()) return next();
-
   if (
     oldState === PlayerStateEnum.DRIVER &&
     newState !== PlayerStateEnum.DRIVER
   ) {
     // todo 暂停录制
+    if (player.isNpc()) {
+      putNpcToWaitingPool(player);
+      return next();
+    }
 
     const veh = getPlayerRecordingVeh(player);
     if (!veh) return next();
@@ -205,9 +212,7 @@ PlayerEvent.onStateChange(({ player, newState, oldState, next }) => {
     recordingVehStartTime.delete(veh);
     recordingVehTimeStamp.delete(veh);
     recordingVehFile.delete(veh);
-
     // recordCallback();
-
     return next();
   }
 
@@ -216,6 +221,9 @@ PlayerEvent.onStateChange(({ player, newState, oldState, next }) => {
     oldState !== PlayerStateEnum.DRIVER &&
     newState === PlayerStateEnum.DRIVER
   ) {
+    if (player.isNpc()) {
+      return next();
+    }
     const oldVeh = getPlayerPauseVeh(player);
     if (!oldVeh) return next();
 
@@ -259,8 +267,10 @@ function putNpcToWaitingPool(npc: Player) {
     replayVehReadFileTimeStamp.delete(vehId);
     replayVehTotalTick.delete(vehId);
 
-    const veh = Vehicle.getInstance(vehId)!;
-    veh.destroy();
+    const veh = Vehicle.getInstance(vehId);
+    if (veh) {
+      veh.isValid() && veh.destroy();
+    }
   }
 
   npc.setVirtualWorld(npcWaitingWorldId);
@@ -274,6 +284,38 @@ PlayerEvent.onSpawn(({ player, next }) => {
 
 PlayerEvent.onDisconnect(({ player, next }) => {
   putNpcToWaitingPool(player);
+
+  if (!isPlayerRecording(player) && !isPlayerPauseRecording(player))
+    return next();
+
+
+  const recordVeh = getPlayerRecordingVeh(player);
+  const pauseVeh = getPlayerPauseVeh(player);
+  const data: Partial<RecordingRecover> = {};
+  if (recordVeh) {
+    data["startTime"] = recordingVehStartTime.get(recordVeh)!;
+    data["timeStamp"] = recordingVehTimeStamp.get(recordVeh)!;
+    data["fileName"] = recordingVehFile.get(recordVeh)!;
+
+    recordingVehPlayer.delete(recordVeh);
+    recordingVehStartTime.delete(recordVeh);
+    recordingVehTimeStamp.delete(recordVeh);
+    recordingVehFile.delete(recordVeh);
+    recordOrPauseAdditional.delete(recordVeh);
+  }
+  if (pauseVeh) {
+    data["startTime"] = pauseVehStartTime.get(pauseVeh)!;
+    data["timeStamp"] = pauseVehTimeStamp.get(pauseVeh)!;
+    data["fileName"] = pauseVehFile.get(pauseVeh)!;
+
+    pauseVehPlayer.delete(pauseVeh);
+    pauseVehStartTime.delete(pauseVeh);
+    pauseVehTimeStamp.delete(pauseVeh);
+    pauseVehFile.delete(pauseVeh);
+  }
+
+  triggerRecordPlayerDisconnect(data);
+
   return next();
 });
 
@@ -298,8 +340,8 @@ onIncomingPacket(({ packetId, bs, next }) => {
       recordingVehTimeStamp.set(data.vehicleId, now + recordTickGap);
       const tick = (now - startTime) / recordTickGap;
       console.log(tick);
-      // todo 提供一个对外api，用于调用后记录additionData，等下一个tick的时候，传递过去这个addition然后清掉
-      recordVehicleData(data.vehicleId, tick, data);
+      const additional = recordOrPauseAdditional.get(data.vehicleId)
+      recordVehicleData(data.vehicleId, tick, data, additional);
     }
     return next();
   }
@@ -379,3 +421,23 @@ onIncomingPacket(({ packetId, bs, next }) => {
   }
   return next();
 });
+
+onWriteAdditional(({ player, additional, next }) => {
+  let veh = getPlayerRecordingVeh(player);
+  if (!veh) {
+    veh = getPlayerRecordingVeh(player);
+  }
+
+  if (!veh) return;
+
+  recordOrPauseAdditional.set(veh, additional);
+
+  return next();
+});
+
+export function writeAdditionalData(player: Player, additional: string) {
+  if (!isPlayerRecording(player) || !isPlayerPauseRecording(player)) {
+    throw new Error("player is not recording");
+  }
+  triggerWriteAdditional({ player, additional });
+}

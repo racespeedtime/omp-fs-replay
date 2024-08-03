@@ -1,5 +1,6 @@
+import { RecordingRecover } from "@/interfaces";
 import { TickReplayDataMini } from "@/types";
-import { defineEvent } from "@infernus/core";
+import { Player, defineEvent } from "@infernus/core";
 import {
   onIncomingRPC,
   onOutgoingPacket,
@@ -31,6 +32,26 @@ export const [onReplayReachEnd, triggerReplayReachEnd] = defineEvent({
   isNative: false,
   beforeEach() {
     return {};
+  },
+});
+
+export const [onRecordPlayerDisconnect, triggerRecordPlayerDisconnect] =
+  defineEvent({
+    name: "OnRecordPlayerDisconnect",
+    isNative: false,
+    beforeEach(data: RecordingRecover) {
+      return data;
+    },
+  });
+
+export const [onWriteAdditional, triggerWriteAdditional] = defineEvent<{
+  player: Player;
+  additional: string;
+}>({
+  name: "OnRecordPlayerDisconnect",
+  isNative: false,
+  beforeEach(data) {
+    return data;
   },
 });
 
