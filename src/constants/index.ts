@@ -26,7 +26,7 @@ export const replayVehReadFileTimeStamp = new Map<Vehicle["id"], number>();
 export const replayVehTotalTick = new Map<Vehicle["id"], number>();
 
 export const recordingVehPlayer = new Map<Vehicle["id"], Player>();
-export const recordingVehStartTime = new Map<Vehicle["id"], number>();
+export const recordReplayVehStartTime = new Map<Vehicle["id"], number>();
 export const recordingVehTimeStamp = new Map<Vehicle["id"], number>();
 export const recordingVehFile = new Map<Vehicle["id"], string>();
 

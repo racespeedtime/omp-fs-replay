@@ -1,6 +1,6 @@
 import { RecordingRecover } from "@/interfaces";
 import { TickReplayDataMini } from "@/types";
-import { Player, defineEvent } from "@infernus/core";
+import { Player, Vehicle, defineEvent } from "@infernus/core";
 import {
   onIncomingRPC,
   onOutgoingPacket,
@@ -18,8 +18,9 @@ export const [onReplayLoseTick, triggerReplayLoseTick] = defineEvent({
 export const [onReplayTick, triggerReplayTick] = defineEvent({
   name: "OnReplayTick",
   isNative: false,
-  beforeEach(replayData: TickReplayDataMini) {
+  beforeEach(vehicle: number, replayData: TickReplayDataMini) {
     return {
+      vehicle: Vehicle.getInstance(vehicle), 
       tick: replayData[0],
       data: replayData[1],
       additional: replayData[2],

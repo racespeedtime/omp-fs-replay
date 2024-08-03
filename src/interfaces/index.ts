@@ -9,5 +9,4 @@ export interface TickReplayData {
 export interface RecordingRecover {
   startTime: number,
   timeStamp: number,
-  fileName: string
 }
