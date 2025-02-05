@@ -16,6 +16,7 @@ class PlayerReplayer extends EventEmitter {
   private isPaused: boolean = false;
   private pauseResolve: ((value: any) => void) | null = null;
   private playbackSpeed: number = 1; // 默认播放速度为1倍速
+  private stopped: boolean = false; // 是否已停止
 
   constructor(directory: string) {
     super();
@@ -95,14 +96,18 @@ class PlayerReplayer extends EventEmitter {
   }
 
   /**
-   * 回放事件
+   * 开始回放事件
    * @param options 过滤选项，包括startTime、endTime和playerId
    */
-  public async replayEvents(options?: {
+  public async start(options?: {
     startTime?: number;
     endTime?: number;
     playerId?: string;
   }): Promise<void> {
+    if (this.stopped) {
+      this.resetState();
+    }
+
     try {
       const files = fs
         .readdirSync(this.directory)
@@ -144,13 +149,18 @@ class PlayerReplayer extends EventEmitter {
       crlfDelay: Infinity,
     });
 
-    let lastTimestamp = 0;
+    let firstEventProcessed = false;
 
     for await (const line of rl) {
       while (this.isPaused) {
         await new Promise<void>((resolve) => {
           this.pauseResolve = resolve;
         });
+      }
+
+      if (this.stopped) {
+        this.emit("stopped");
+        break;
       }
 
       try {
@@ -164,16 +174,25 @@ class PlayerReplayer extends EventEmitter {
           if (options.playerId && event.playerId !== options.playerId) continue;
         }
 
-        // 计算延迟时间并等待
-        if (lastTimestamp !== 0) {
-          const delay = (event.timestamp - lastTimestamp) / this.playbackSpeed;
-          await new Promise((resolve) => setTimeout(resolve, delay));
+        // 触发 ready 事件一次
+        if (!firstEventProcessed) {
+          this.emit("ready");
+          firstEventProcessed = true;
         }
+
+        // 计算延迟时间并等待
+        await new Promise((resolve) =>
+          setTimeout(resolve, 1000 / this.playbackSpeed)
+        );
 
         // 触发事件处理事件
         this.emit("event", event);
 
-        lastTimestamp = event.timestamp;
+        // 如果已经停止，则跳出循环
+        if (this.stopped) {
+          this.emit("stopped");
+          break;
+        }
       } catch (err) {
         console.error(`Error parsing line in file ${filePath}:`, err);
         continue; // 跳过当前行，继续处理下一行
@@ -207,6 +226,26 @@ class PlayerReplayer extends EventEmitter {
       this.pauseResolve(null);
       this.pauseResolve = null;
     }
+  }
+
+  /**
+   * 停止回放
+   */
+  public stop(): void {
+    this.stopped = true;
+    if (this.pauseResolve) {
+      this.pauseResolve(null);
+      this.pauseResolve = null;
+    }
+  }
+
+  /**
+   * 重置状态以便可以重新开始回放
+   */
+  private resetState(): void {
+    this.isPaused = false;
+    this.pauseResolve = null;
+    this.stopped = false;
   }
 }
 
@@ -242,6 +281,14 @@ replayer.on("error", (err: Error) => {
   console.error("Error during replay:", err);
 });
 
+replayer.on("ready", () => {
+  console.log("Ready to start replaying events.");
+});
+
+replayer.on("stopped", () => {
+  console.log("Replay stopped.");
+});
+
 // 获取日志文件的时间范围
 replayer.getTimeRange().then(({ startTime, endTime }) => {
   console.log(`Start Time: ${new Date(startTime).toISOString()}`);
@@ -265,7 +312,23 @@ replayer.getTimeRange().then(({ startTime, endTime }) => {
     replayer.resume();
   }, 10000);
 
-  replayer.replayEvents({
+  // 模拟停止
+  setTimeout(() => {
+    console.log("Stopping...");
+    replayer.stop();
+  }, 15000);
+
+  // 再次开始回放
+  setTimeout(() => {
+    console.log("Starting replay again...");
+    replayer.start({
+      startTime: startPlaybackTime,
+      endTime: endPlaybackTime,
+      playerId: "player1",
+    });
+  }, 20000);
+
+  replayer.start({
     startTime: startPlaybackTime,
     endTime: endPlaybackTime,
     playerId: "player1",
