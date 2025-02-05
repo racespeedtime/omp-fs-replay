@@ -15,10 +15,29 @@ class PlayerReplayer extends EventEmitter {
   private directory: string;
   private isPaused: boolean = false;
   private pauseResolve: ((value: any) => void) | null = null;
+  private playbackSpeed: number = 1; // 默认播放速度为1倍速
 
   constructor(directory: string) {
     super();
     this.directory = directory;
+  }
+
+  /**
+   * 设置播放速度
+   * @param speed 播放速度（例如0.5表示半速，2表示两倍速）
+   */
+  public setPlaybackSpeed(speed: number): void {
+    if (speed <= 0) {
+      throw new Error("Playback speed must be greater than 0");
+    }
+    this.playbackSpeed = speed;
+  }
+
+  /**
+   * 获取当前播放速度
+   */
+  public getPlaybackSpeed(): number {
+    return this.playbackSpeed;
   }
 
   /**
@@ -147,7 +166,7 @@ class PlayerReplayer extends EventEmitter {
 
         // 计算延迟时间并等待
         if (lastTimestamp !== 0) {
-          const delay = event.timestamp - lastTimestamp;
+          const delay = (event.timestamp - lastTimestamp) / this.playbackSpeed;
           await new Promise((resolve) => setTimeout(resolve, delay));
         }
 
@@ -231,6 +250,9 @@ replayer.getTimeRange().then(({ startTime, endTime }) => {
   // 示例：从某一段时间开始回放
   const startPlaybackTime = startTime + 1000 * 60 * 5; // 从开始时间后5分钟开始
   const endPlaybackTime = endTime - 1000 * 60 * 5; // 在结束时间前5分钟结束
+
+  // 设置播放速度为2倍速
+  replayer.setPlaybackSpeed(2);
 
   // 模拟暂停和恢复
   setTimeout(() => {
