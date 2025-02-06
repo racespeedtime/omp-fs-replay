@@ -17,10 +17,39 @@ class PlayerReplayer extends EventEmitter {
   private pauseResolve: (() => void) | null = null;
   private playbackSpeed: number = 1; // 默认播放速度为1倍速
   private stopped: boolean = false; // 是否已停止
+  private currentTime: number = 0; // 当前播放时间戳
+  private files: string[] = []; // 文件路径列表
+  private fileEventCounts: number[] = []; // 每个文件的事件数量
+  private currentFileIndex: number = 0; // 当前处理的文件索引
 
   constructor(directory: string) {
     super();
     this.directory = directory;
+    this.loadFiles().catch((err) => {
+      throw err;
+    });
+  }
+
+  /**
+   * 加载目录中的所有日志文件
+   */
+  private async loadFiles(): Promise<void> {
+    try {
+      const entries = await fs.promises.readdir(this.directory, {
+        withFileTypes: true,
+      });
+      this.files = entries
+        .filter((dirent) => dirent.isFile() && dirent.name.endsWith(".jsonl"))
+        .map((dirent) => dirent.name)
+        .sort();
+
+      if (this.files.length === 0) {
+        throw new Error("No log files found in the directory.");
+      }
+    } catch (err) {
+      console.error("Error loading files:", err);
+      throw err;
+    }
   }
 
   /**
@@ -45,17 +74,15 @@ class PlayerReplayer extends EventEmitter {
    * 获取日志文件的时间范围（开始和结束的时间戳）
    */
   public async getTimeRange(): Promise<{ startTime: number; endTime: number }> {
-    const files = fs
-      .readdirSync(this.directory)
-      .filter((file) => file.endsWith(".jsonl"))
-      .sort();
-
-    if (files.length === 0) {
-      throw new Error("No log files found in the directory.");
+    if (this.files.length === 0) {
+      await this.loadFiles();
     }
 
-    const firstFile = path.join(this.directory, files[0]);
-    const lastFile = path.join(this.directory, files[files.length - 1]);
+    const firstFile = path.join(this.directory, this.files[0]);
+    const lastFile = path.join(
+      this.directory,
+      this.files[this.files.length - 1]
+    );
 
     let startTime = Infinity;
     let endTime = -Infinity;
@@ -124,21 +151,23 @@ class PlayerReplayer extends EventEmitter {
       this.resetState();
     }
 
-    try {
-      const files = fs
-        .readdirSync(this.directory)
-        .filter((file) => file.endsWith(".jsonl"))
-        .sort();
-      let processedEvents = 0;
+    if (this.files.length === 0) {
+      await this.loadFiles();
+    }
 
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
+    try {
+      this.currentFileIndex = 0;
+      this.currentTime = options?.startTime ?? 0;
+      this.fileEventCounts = [];
+
+      for (let i = this.currentFileIndex; i < this.files.length; i++) {
+        const file = this.files[i];
         await this.processFile(path.join(this.directory, file), options);
-        processedEvents++;
+        const processedEvents = this.fileEventCounts.reduce((a, b) => a + b, 0);
         // 触发进度更新事件
         this.emit("progress", {
           currentFile: file,
-          totalFiles: files.length,
+          totalFiles: this.files.length,
           processedEvents,
         });
       }
@@ -165,8 +194,18 @@ class PlayerReplayer extends EventEmitter {
       crlfDelay: Infinity,
     });
 
+    // 错误处理
+    fileStream.on("error", (err) => {
+      console.error(`Error reading file ${filePath}:`, err);
+    });
+
+    // 文件处理完成时的日志
+    rl.on("close", () => {
+      console.log(`Finished processing file ${filePath}`);
+    });
+
+    let eventCount = 0;
     let firstEventProcessed = false;
-    let lastTimestamp = 0;
 
     for await (const line of rl) {
       while (this.isPaused) {
@@ -191,6 +230,11 @@ class PlayerReplayer extends EventEmitter {
           if (options.playerId && event.playerId !== options.playerId) continue;
         }
 
+        // 如果当前时间大于事件时间，则跳过该事件
+        if (event.timestamp < this.currentTime) {
+          continue;
+        }
+
         // 触发 ready 事件一次
         if (!firstEventProcessed) {
           this.emit("ready");
@@ -198,33 +242,28 @@ class PlayerReplayer extends EventEmitter {
         }
 
         // 计算延迟时间并等待
-        if (lastTimestamp !== 0) {
-          const delay = (event.timestamp - lastTimestamp) / this.playbackSpeed;
+        if (this.currentTime !== 0) {
+          const delay =
+            (event.timestamp - this.currentTime) / this.playbackSpeed;
           // 开setTimeout线程也要时间，如果间隔过短的话直接当同步处理了
           if (delay > 4) {
             await new Promise((resolve) => setTimeout(resolve, delay));
           }
         }
 
+        this.currentTime = event.timestamp;
+
         // 触发事件处理事件
         this.emit("event", event);
 
-        lastTimestamp = event.timestamp;
+        eventCount++;
       } catch (err) {
         console.error(`Error parsing line in file ${filePath}:`, err);
         continue; // 跳过当前行，继续处理下一行
       }
     }
 
-    // 错误处理
-    fileStream.on("error", (err) => {
-      console.error(`Error reading file ${filePath}:`, err);
-    });
-
-    // 文件处理完成时的日志
-    rl.on("close", () => {
-      console.log(`Finished processing file ${filePath}`);
-    });
+    this.fileEventCounts.push(eventCount);
   }
 
   /**
@@ -263,6 +302,30 @@ class PlayerReplayer extends EventEmitter {
     this.isPaused = false;
     this.pauseResolve = null;
     this.stopped = false;
+    this.currentTime = 0;
+    this.currentFileIndex = 0;
+    this.fileEventCounts = [];
+  }
+
+  /**
+   * 前进指定秒数
+   * @param seconds 秒数
+   */
+  public forward(seconds: number): void {
+    this.stop();
+    this.currentTime += seconds;
+    this.start({ startTime: this.currentTime }); // 从新的时间戳开始重新播放
+  }
+
+  /**
+   * 后退指定秒数
+   * @param seconds 秒数
+   */
+  public backward(seconds: number): void {
+    this.stop();
+    this.currentTime -= seconds;
+    this.currentTime = Math.max(this.currentTime, 0); // 确保不小于0
+    this.start({ startTime: this.currentTime }); // 从新的时间戳开始重新播放
   }
 }
 
