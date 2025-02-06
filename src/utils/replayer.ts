@@ -20,7 +20,6 @@ class PlayerReplayer extends EventEmitter {
   private currentTime: number = 0; // 当前播放时间戳
   private files: string[] = []; // 文件路径列表
   private fileEventCount: number = 0; // 总已处理事件数量
-  private currentFileIndex: number = 0; // 当前处理的文件索引
 
   constructor(directory: string) {
     super();
@@ -153,11 +152,10 @@ class PlayerReplayer extends EventEmitter {
     }
 
     try {
-      this.currentFileIndex = 0;
       this.currentTime = options?.startTime ?? 0;
       this.fileEventCount = 0;
 
-      for (let i = this.currentFileIndex; i < this.files.length; i++) {
+      for (let i = 0; i < this.files.length; i++) {
         await this.processFile(this.files[i], options);
       }
 
@@ -308,7 +306,6 @@ class PlayerReplayer extends EventEmitter {
     this.pauseResolve = null;
     this.stopped = false;
     this.currentTime = 0;
-    this.currentFileIndex = 0;
     this.fileEventCount = 0;
   }
 
