@@ -327,8 +327,8 @@ class PlayerReplayer extends EventEmitter {
    * @param seconds 秒数
    */
   public backward(seconds: number): void {
-    this.currentTime -= seconds;
-    this.currentTime = Math.max(this.currentTime, 0); // 确保不小于0
+    this.stop();
+    this.currentTime = Math.max(this.currentTime - seconds, 0); // 确保不小于0
     this.start({ startTime: this.currentTime }); // 从新的时间戳开始重新播放
   }
 }
