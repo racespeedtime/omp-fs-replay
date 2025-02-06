@@ -45,52 +45,68 @@ class PlayerReplayer extends EventEmitter {
    * 获取日志文件的时间范围（开始和结束的时间戳）
    */
   public async getTimeRange(): Promise<{ startTime: number; endTime: number }> {
-    let startTime = Infinity;
-    let endTime = -Infinity;
-
     const files = fs
       .readdirSync(this.directory)
       .filter((file) => file.endsWith(".jsonl"))
       .sort();
 
-    for (const file of files) {
-      const filePath = path.join(this.directory, file);
-      const fileStream = fs.createReadStream(filePath);
-      const rl = createInterface({
-        input: fileStream,
-        crlfDelay: Infinity,
-      });
-
-      let firstLine = true;
-      let lastEvent: Event | null = null;
-
-      for await (const line of rl) {
-        try {
-          const event: Event = JSON.parse(line);
-
-          if (firstLine) {
-            startTime = Math.min(startTime, event.timestamp);
-            firstLine = false;
-          }
-          lastEvent = event;
-        } catch (err) {
-          console.error(`Error parsing line in file ${filePath}:`, err);
-          continue;
-        }
-      }
-
-      if (lastEvent) {
-        endTime = Math.max(endTime, lastEvent.timestamp);
-      }
-
-      fileStream.on("error", (err) => {
-        console.error(`Error reading file ${filePath}:`, err);
-      });
-
-      rl.on("close", () => {
-        console.log(`Finished processing file ${filePath}`);
-      });
+    if (files.length === 0) {
+      throw new Error("No log files found in the directory.");
     }
+
+    const firstFile = path.join(this.directory, files[0]);
+    const lastFile = path.join(this.directory, files[files.length - 1]);
+
+    let startTime = Infinity;
+    let endTime = -Infinity;
+
+    // Read the first event from the first file to get startTime
+    const firstFileStream = fs.createReadStream(firstFile);
+    const firstFileReader = createInterface({
+      input: firstFileStream,
+      crlfDelay: Infinity,
+    });
+
+    for await (const line of firstFileReader) {
+      try {
+        const event: Event = JSON.parse(line);
+        startTime = Math.min(startTime, event.timestamp);
+        break; // Only need the first event
+      } catch (err) {
+        console.error(`Error parsing line in file ${firstFile}:`, err);
+        continue;
+      }
+    }
+
+    firstFileStream.on("error", (err) => {
+      console.error(`Error reading file ${firstFile}:`, err);
+    });
+
+    // Read the last event from the last file to get endTime
+    const lastFileStream = fs.createReadStream(lastFile);
+    const lastFileReader = createInterface({
+      input: lastFileStream,
+      crlfDelay: Infinity,
+    });
+
+    let lastEvent: Event | null = null;
+
+    for await (const line of lastFileReader) {
+      try {
+        lastEvent = JSON.parse(line);
+      } catch (err) {
+        console.error(`Error parsing line in file ${lastFile}:`, err);
+        continue;
+      }
+    }
+
+    if (lastEvent) {
+      endTime = Math.max(endTime, lastEvent.timestamp);
+    }
+
+    lastFileStream.on("error", (err) => {
+      console.error(`Error reading file ${lastFile}:`, err);
+    });
 
     return { startTime, endTime };
   }
@@ -118,7 +134,7 @@ class PlayerReplayer extends EventEmitter {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         await this.processFile(path.join(this.directory, file), options);
-
+        processedEvents++;
         // 触发进度更新事件
         this.emit("progress", {
           currentFile: file,
@@ -150,6 +166,7 @@ class PlayerReplayer extends EventEmitter {
     });
 
     let firstEventProcessed = false;
+    let lastTimestamp = 0;
 
     for await (const line of rl) {
       while (this.isPaused) {
@@ -181,18 +198,18 @@ class PlayerReplayer extends EventEmitter {
         }
 
         // 计算延迟时间并等待
-        await new Promise((resolve) =>
-          setTimeout(resolve, 1000 / this.playbackSpeed)
-        );
+        if (lastTimestamp !== 0) {
+          const delay = (event.timestamp - lastTimestamp) / this.playbackSpeed;
+          // 开setTimeout线程也要时间，如果间隔过短的话直接当同步处理了
+          if (delay > 4) {
+            await new Promise((resolve) => setTimeout(resolve, delay));
+          }
+        }
 
         // 触发事件处理事件
         this.emit("event", event);
 
-        // 如果已经停止，则跳出循环
-        if (this.stopped) {
-          this.emit("stopped");
-          break;
-        }
+        lastTimestamp = event.timestamp;
       } catch (err) {
         console.error(`Error parsing line in file ${filePath}:`, err);
         continue; // 跳过当前行，继续处理下一行
