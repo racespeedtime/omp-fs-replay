@@ -25,9 +25,6 @@ class PlayerReplayer extends EventEmitter {
   constructor(directory: string) {
     super();
     this.directory = directory;
-    this.loadFiles().catch((err) => {
-      throw err;
-    });
   }
 
   /**
