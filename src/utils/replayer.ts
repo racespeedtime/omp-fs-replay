@@ -13,13 +13,13 @@ interface Event {
 
 class PlayerReplayer extends EventEmitter {
   private directory: string;
-  private isPaused: boolean = false;
+  private isPaused_: boolean = false;
   private pauseResolve: (() => void) | null = null;
   private playbackSpeed: number = 1; // 默认播放速度为1倍速
   private stopped: boolean = false; // 是否已停止
   private currentTime: number = 0; // 当前播放时间戳
   private files: string[] = []; // 文件路径列表
-  private fileEventCounts: number[] = []; // 每个文件的事件数量
+  private fileEventCount: number = 0; // 总已处理事件数量
   private currentFileIndex: number = 0; // 当前处理的文件索引
 
   constructor(directory: string) {
@@ -155,18 +155,10 @@ class PlayerReplayer extends EventEmitter {
     try {
       this.currentFileIndex = 0;
       this.currentTime = options?.startTime ?? 0;
-      this.fileEventCounts = [];
+      this.fileEventCount = 0;
 
       for (let i = this.currentFileIndex; i < this.files.length; i++) {
-        const file = this.files[i];
-        await this.processFile(path.join(this.directory, file), options);
-        const processedEvents = this.fileEventCounts.reduce((a, b) => a + b, 0);
-        // 触发进度更新事件
-        this.emit("progress", {
-          currentFile: file,
-          totalFiles: this.files.length,
-          processedEvents,
-        });
+        await this.processFile(this.files[i], options);
       }
 
       // 触发完成事件
@@ -178,13 +170,14 @@ class PlayerReplayer extends EventEmitter {
 
   /**
    * 按批处理文件，支持并发读取
-   * @param filePath 文件路径
+   * @param fileName 文件路径
    * @param options 过滤选项
    */
   private async processFile(
-    filePath: string,
+    fileName: string,
     options?: { startTime?: number; endTime?: number; playerId?: string }
   ): Promise<void> {
+    const filePath = path.join(this.directory, fileName);
     const fileStream = fs.createReadStream(filePath);
     const rl = createInterface({
       input: fileStream,
@@ -205,7 +198,7 @@ class PlayerReplayer extends EventEmitter {
     let firstEventProcessed = false;
 
     for await (const line of rl) {
-      while (this.isPaused) {
+      while (this.isPaused_) {
         await new Promise<void>((resolve) => {
           this.pauseResolve = resolve;
         });
@@ -253,28 +246,43 @@ class PlayerReplayer extends EventEmitter {
         // 触发事件处理事件
         this.emit("event", event);
 
+        // 触发进度更新事件
         eventCount++;
+        this.fileEventCount++;
+
+        this.emit("progress", {
+          fileList: this.files,
+          totalFiles: this.files.length,
+          currentFile: fileName,
+          currentEvents: eventCount,
+          processedEvents: this.fileEventCount,
+        });
       } catch (err) {
         console.error(`Error parsing line in file ${filePath}:`, err);
         continue; // 跳过当前行，继续处理下一行
       }
     }
+  }
 
-    this.fileEventCounts.push(eventCount);
+  /**
+   * 获取当前是否处于暂停状态
+   */
+  public isPaused(): boolean {
+    return this.isPaused_;
   }
 
   /**
    * 暂停回放
    */
   public pause(): void {
-    this.isPaused = true;
+    this.isPaused_ = true;
   }
 
   /**
    * 恢复回放
    */
   public resume(): void {
-    this.isPaused = false;
+    this.isPaused_ = false;
     if (this.pauseResolve) {
       this.pauseResolve();
       this.pauseResolve = null;
@@ -296,12 +304,12 @@ class PlayerReplayer extends EventEmitter {
    * 重置状态以便可以重新开始回放
    */
   private resetState(): void {
-    this.isPaused = false;
+    this.isPaused_ = false;
     this.pauseResolve = null;
     this.stopped = false;
     this.currentTime = 0;
     this.currentFileIndex = 0;
-    this.fileEventCounts = [];
+    this.fileEventCount = 0;
   }
 
   /**
@@ -319,7 +327,6 @@ class PlayerReplayer extends EventEmitter {
    * @param seconds 秒数
    */
   public backward(seconds: number): void {
-    this.stop();
     this.currentTime -= seconds;
     this.currentTime = Math.max(this.currentTime, 0); // 确保不小于0
     this.start({ startTime: this.currentTime }); // 从新的时间戳开始重新播放
