@@ -6,7 +6,7 @@ import { EventEmitter } from "events";
 // 定义事件接口
 interface Event {
   action: string;
-  direction?: string; // 可选字段
+  value?: string; // 可选字段
   timestamp: number;
   playerId: string; // 添加玩家ID字段以便过滤
 }
@@ -14,7 +14,7 @@ interface Event {
 class PlayerReplayer extends EventEmitter {
   private directory: string;
   private isPaused: boolean = false;
-  private pauseResolve: ((value: any) => void) | null = null;
+  private pauseResolve: (() => void) | null = null;
   private playbackSpeed: number = 1; // 默认播放速度为1倍速
   private stopped: boolean = false; // 是否已停止
 
@@ -240,7 +240,7 @@ class PlayerReplayer extends EventEmitter {
   public resume(): void {
     this.isPaused = false;
     if (this.pauseResolve) {
-      this.pauseResolve(null);
+      this.pauseResolve();
       this.pauseResolve = null;
     }
   }
@@ -251,7 +251,7 @@ class PlayerReplayer extends EventEmitter {
   public stop(): void {
     this.stopped = true;
     if (this.pauseResolve) {
-      this.pauseResolve(null);
+      this.pauseResolve();
       this.pauseResolve = null;
     }
   }
@@ -272,8 +272,8 @@ const replayer = new PlayerReplayer(path.join(__dirname, "logs"));
 // 监听事件
 replayer.on("event", (event: Event) => {
   console.log(`Replaying action: ${event.action} at ${event.timestamp}`);
-  if (event.direction) {
-    console.log(`Direction: ${event.direction}`);
+  if (event.value) {
+    console.log(`Direction: ${event.value}`);
   }
 });
 

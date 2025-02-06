@@ -5,7 +5,7 @@ import * as path from "path";
 // 定义事件接口
 interface Event {
   action: string;
-  direction?: string; // 可选字段
+  value?: string; // 可选字段
   timestamp: number;
   playerId: string; // 添加玩家ID字段以便记录
 }
@@ -13,7 +13,7 @@ interface Event {
 class PlayerRecorder {
   private directory: string;
   private interval: number;
-  private queue: Map<string, Event[]> = new Map();
+  private queue: Event[] = [];
   private currentFile: string | null = null;
   private stream: fs.WriteStream | null = null;
   private timerId: NodeJS.Timeout | null = null;
@@ -83,21 +83,24 @@ class PlayerRecorder {
    */
   private async flush(): Promise<void> {
     if (this.stream && !this.isPaused) {
-      for (const [playerId, events] of this.queue.entries()) {
+      // 写入前根据时间戳排序
+      this.queue.sort((a, b) => a.timestamp - b.timestamp);
+
+      for (const event of this.queue) {
         try {
-          events.forEach((event) => {
-            this.stream!.write(JSON.stringify(event) + "\n");
-          });
+          this.stream!.write(JSON.stringify(event) + "\n");
         } catch (err) {
-          console.error(`Error writing event for player ${playerId}:`, err);
+          console.error(
+            `Error writing event for player ${event.playerId}:`,
+            err
+          );
         }
       }
-      this.queue.clear();
-
+      this.queue.length = 0; // 清空队列
       // 确保所有数据都被写入磁盘
       await new Promise<void>((resolve, reject) => {
         if (this.stream) {
-          this.stream.end(() => resolve());
+          this.stream.end(resolve);
         } else {
           reject(new Error("Stream is not initialized"));
         }
@@ -107,16 +110,12 @@ class PlayerRecorder {
 
   /**
    * 记录玩家的操作事件
-   * @param playerId 玩家ID
    * @param event 事件对象
    */
-  public recordEvent(playerId: string, event: Event): void {
+  public recordEvent(event: Event): void {
     if (!this.isPaused) {
-      if (!this.queue.has(playerId)) {
-        this.queue.set(playerId, []);
-      }
-      event.timestamp = Date.now(); // 确保每个事件都有时间戳
-      this.queue.get(playerId)?.push(event);
+      event.timestamp = Date.now();
+      this.queue.push(event);
     }
   }
 
@@ -165,9 +164,9 @@ function simulatePlayerOperations(playerId: string): void {
       const action = actions[Math.floor(Math.random() * actions.length)];
       const direction =
         directions[Math.floor(Math.random() * directions.length)];
-      recorder.recordEvent(playerId, {
+      recorder.recordEvent({
         action,
-        direction,
+        value: direction,
         playerId,
         timestamp: 0,
       });
