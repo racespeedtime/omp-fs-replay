@@ -29,6 +29,11 @@ interface ReadyEvent {}
 
 interface StoppedEvent {}
 
+interface FileTimeRange {
+  startTime: number;
+  endTime: number;
+}
+
 class PlayerReplayer {
   private directory: string;
   private isPaused_: boolean = false;
@@ -39,6 +44,7 @@ class PlayerReplayer {
   private stopped: boolean = false; // 是否已停止
   private currentTime: number = 0; // 当前播放时间戳
   private files: string[] = []; // 文件路径列表
+  private fileTimeRanges: Map<string, FileTimeRange> = new Map();
   private fileEventCount: number = 0; // 总已处理事件数量
   private eventEmitter: EventEmitter = new EventEmitter(); // 内部创建EventEmitter实例
 
@@ -88,11 +94,23 @@ class PlayerReplayer {
   }
 
   /**
-   * 获取日志文件的时间范围（开始和结束的时间戳）
+   * 获取日志文件的总时间范围（开始和结束的时间戳）
    */
-  public async getTimeRange(): Promise<{ startTime: number; endTime: number }> {
+  public async getTimeRange(): Promise<FileTimeRange> {
     if (this.files.length === 0) {
       await this.loadFiles();
+    }
+
+    const firstFileCache = this.fileTimeRanges.get(this.files[0]);
+    const lastFileCache = this.fileTimeRanges.get(
+      this.files[this.files.length - 1]
+    );
+
+    if (firstFileCache && lastFileCache) {
+      return {
+        startTime: firstFileCache.startTime,
+        endTime: lastFileCache.endTime,
+      };
     }
 
     const firstFile = path.join(this.directory, this.files[0]);
@@ -181,7 +199,11 @@ class PlayerReplayer {
       this.isCompleted_ = false;
 
       for (let i = 0; i < this.files.length; i++) {
-        await this.processFile(this.files[i], options);
+        const fileName = this.files[i];
+        const range = this.fileTimeRanges.get(fileName);
+        if (!range || range.startTime >= this.currentTime) {
+          await this.processFile(fileName, options);
+        }
       }
 
       // 触发完成事件
@@ -224,6 +246,9 @@ class PlayerReplayer {
     let eventCount = 0;
     let firstEventProcessed = false;
 
+    let startTime = null;
+    let endTime = null;
+
     for await (const line of rl) {
       while (this.isPaused_) {
         await new Promise<void>((resolve) => {
@@ -239,6 +264,12 @@ class PlayerReplayer {
 
       try {
         const event: Event = JSON.parse(line);
+
+        if (!startTime) {
+          startTime = event.timestamp;
+        }
+
+        endTime = event.timestamp;
 
         // 根据过滤条件跳过不符合要求的事件
         if (options) {
@@ -289,6 +320,10 @@ class PlayerReplayer {
         console.error(`Error parsing line in file ${filePath}:`, err);
         continue; // 跳过当前行，继续处理下一行
       }
+    }
+
+    if (startTime && endTime) {
+      this.fileTimeRanges.set(fileName, { startTime, endTime });
     }
   }
 
