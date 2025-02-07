@@ -1,6 +1,5 @@
 import * as fs from "fs";
 import * as path from "path";
-// import { v4 as uuidv4 } from "uuid";
 
 // 定义事件接口
 interface Event {
@@ -17,7 +16,8 @@ class PlayerRecorder {
   private currentFile: string | null = null;
   private stream: fs.WriteStream | null = null;
   private timerId: NodeJS.Timeout | null = null;
-  public isPaused: boolean = false;
+  private isRecording_: boolean = false;
+  private isPaused_: boolean = false;
 
   /**
    * 构造函数
@@ -38,7 +38,7 @@ class PlayerRecorder {
     if (!fs.existsSync(this.directory)) {
       fs.mkdirSync(this.directory, { recursive: true });
     }
-    this.startNewFile();
+    this.isRecording_ = true;
     this.scheduleFlush();
   }
 
@@ -47,7 +47,6 @@ class PlayerRecorder {
    */
   private startNewFile(): void {
     const timestamp = Date.now();
-    // const fileName = `${timestamp}-${uuidv4()}.jsonl`;
     const fileName = `${timestamp}.jsonl`;
     this.currentFile = path.join(this.directory, fileName);
     this.stream = fs.createWriteStream(this.currentFile, { flags: "a" });
@@ -63,10 +62,12 @@ class PlayerRecorder {
    */
   private scheduleFlush(): void {
     this.timerId = setTimeout(() => {
-      if (!this.isPaused) {
+      if (!this.isPaused_) {
         this.flush()
           .then(() => {
-            this.startNewFile();
+            if (this.queue.length > 0) {
+              this.startNewFile();
+            }
             this.scheduleFlush();
           })
           .catch((err) => {
@@ -82,7 +83,7 @@ class PlayerRecorder {
    * 将队列中的所有事件写入当前日志文件
    */
   private async flush(): Promise<void> {
-    if (this.stream && !this.isPaused) {
+    if (this.stream && !this.isPaused_ && this.queue.length > 0) {
       // 写入前根据时间戳排序
       this.queue.sort((a, b) => a.timestamp - b.timestamp);
 
@@ -113,24 +114,38 @@ class PlayerRecorder {
    * @param event 事件对象
    */
   public recordEvent(event: Event): void {
-    if (!this.isPaused) {
+    if (!this.isPaused_) {
       event.timestamp = Date.now();
       this.queue.push(event);
     }
   }
 
   /**
+   * 获取当前是否正在记录事件
+   */
+  public isRecording(): boolean {
+    return this.isRecording_;
+  }
+
+  /**
+   * 获取当前是否已暂停记录
+   */
+  public isPaused(): boolean {
+    return this.isPaused_;
+  }
+
+  /**
    * 暂停记录
    */
   public pause(): void {
-    this.isPaused = true;
+    this.isPaused_ = true;
   }
 
   /**
    * 恢复记录
    */
   public resume(): void {
-    this.isPaused = false;
+    this.isPaused_ = false;
     this.scheduleFlush(); // 重新调度刷新任务
   }
 
@@ -146,6 +161,7 @@ class PlayerRecorder {
         if (this.stream) {
           this.stream.end();
         }
+        this.isRecording_ = false;
       })
       .catch((err) => {
         console.error("Error closing recorder:", err);
