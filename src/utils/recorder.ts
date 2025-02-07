@@ -108,7 +108,7 @@ class PlayerRecorder {
       if (!this.isPaused_) {
         this.flush()
           .then(() => {
-            if (this.queue.length > 0 && this.flushInterval) {
+            if (this.queue.length > 0) {
               this.scheduleFlush();
             }
           })
@@ -145,12 +145,13 @@ class PlayerRecorder {
 
       for (const event of this.queue) {
         try {
-          const isOk = this.stream!.write(JSON.stringify(event) + "\n");
-          if (!isOk) {
-            await new Promise<void>((resolve) => {
-              this.stream!.once("drain", resolve);
-            });
-          }
+          // const isOk = 
+          this.stream!.write(JSON.stringify(event) + "\n");
+          // if (!isOk) {
+          //   await new Promise<void>((resolve) => {
+          //     this.stream!.once("drain", resolve);
+          //   });
+          // }
         } catch (err) {
           console.error(
             `Error writing event for player ${event.playerId}:`,
@@ -199,6 +200,16 @@ class PlayerRecorder {
    * 暂停记录
    */
   public pause(): void {
+    if (this.isPaused_) return;
+
+    if (this.flushTimerId) {
+      clearTimeout(this.flushTimerId);
+      this.flushTimerId = null;
+    }
+    if (this.newFileTimerId) {
+      clearTimeout(this.newFileTimerId);
+      this.newFileTimerId = null;
+    }
     this.isPaused_ = true;
   }
 
@@ -206,6 +217,7 @@ class PlayerRecorder {
    * 恢复记录
    */
   public resume(): void {
+    if (!this.isPaused_) return;
     this.isPaused_ = false;
     this.scheduleFlush(); // 重新调度刷新任务
     this.scheduleNewFile(); // 重新调度新文件任务
@@ -217,15 +229,14 @@ class PlayerRecorder {
   public close(): void {
     if (this.flushTimerId) {
       clearTimeout(this.flushTimerId);
+      this.flushTimerId = null;
     }
     if (this.newFileTimerId) {
       clearTimeout(this.newFileTimerId);
+      this.newFileTimerId = null;
     }
     this.flush()
       .then(() => {
-        if (this.stream) {
-          this.stream.end();
-        }
         this.isRecording_ = false;
       })
       .catch((err) => {
@@ -235,7 +246,9 @@ class PlayerRecorder {
 }
 
 // 使用示例
-const recorder = new PlayerRecorder(path.join(__dirname, "logs"));
+const recorder = new PlayerRecorder({
+  directory: path.join(__dirname, "logs"),
+});
 
 function simulatePlayerOperations(playerId: string): void {
   setInterval(() => {
