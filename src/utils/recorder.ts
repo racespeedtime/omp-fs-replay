@@ -210,12 +210,14 @@ class PlayerRecorder {
   public resume(): void {
     if (this.isRecording_ || !this.isPaused_) return;
     this.isPaused_ = false;
-    if(this.nextFileTimestamp > 0 && Date.now() >= this.nextFileTimestamp) {
-      this.nextFileTimestamp = 0;
-      this.startNewFile()
-    }
-    this.scheduleNewFile(); // 重新调度新文件任务
-    this.scheduleFlush(); // 重新调度刷新任务
+    this.flush().then(() => {
+      if(this.nextFileTimestamp > 0 && Date.now() >= this.nextFileTimestamp) {
+        this.nextFileTimestamp = 0;
+        this.startNewFile()
+      }
+      this.scheduleNewFile(); // 重新调度新文件任务
+      this.scheduleFlush(); // 重新调度刷新任务
+    });
   }
 
   /**
