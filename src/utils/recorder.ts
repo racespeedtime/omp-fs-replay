@@ -56,7 +56,8 @@ class PlayerRecorder {
       this.flushInterval >= minFlushInterval &&
       this.flushInterval <= maxFlushInterval &&
       this.newFileInterval >= minNewFileInterval &&
-      this.newFileInterval <= maxNewFileInterval
+      this.newFileInterval <= maxNewFileInterval &&
+      this.newFileInterval >= this.flushInterval
     );
   }
 
@@ -78,6 +79,16 @@ class PlayerRecorder {
    * 启动新的日志文件
    */
   private startNewFile(): void {
+    if (this.stream) {
+      this.stream.end(() => {
+        this.createNewFileStream();
+      });
+    } else {
+      this.createNewFileStream();
+    }
+  }
+
+  private createNewFileStream(): void {
     const timestamp = Date.now();
     const fileName = `${timestamp}.jsonl`;
     this.currentFile = path.join(this.directory, fileName);
@@ -134,7 +145,12 @@ class PlayerRecorder {
 
       for (const event of this.queue) {
         try {
-          this.stream!.write(JSON.stringify(event) + "\n");
+          const isOk = this.stream!.write(JSON.stringify(event) + "\n");
+          if (!isOk) {
+            await new Promise<void>((resolve) => {
+              this.stream!.once("drain", resolve);
+            });
+          }
         } catch (err) {
           console.error(
             `Error writing event for player ${event.playerId}:`,
