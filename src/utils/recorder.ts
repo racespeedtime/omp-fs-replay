@@ -105,19 +105,15 @@ class PlayerRecorder {
    */
   private scheduleFlush(): void {
     this.flushTimerId = setTimeout(() => {
-      if (!this.isPaused_) {
-        this.flush()
-          .then(() => {
-            if (this.queue.length > 0) {
-              this.scheduleFlush();
-            }
-          })
-          .catch((err) => {
-            console.error("Error flushing data:", err);
-          });
-      } else {
-        this.scheduleFlush(); // 如果暂停，则重新设置定时器
-      }
+      this.flush()
+        .then(() => {
+          if (this.queue.length > 0) {
+            this.scheduleFlush();
+          }
+        })
+        .catch((err) => {
+          console.error("Error flushing data:", err);
+        });
     }, this.flushInterval);
   }
 
@@ -126,12 +122,8 @@ class PlayerRecorder {
    */
   private scheduleNewFile(): void {
     this.newFileTimerId = setTimeout(() => {
-      if (!this.isPaused_) {
-        this.startNewFile();
-        this.scheduleNewFile();
-      } else {
-        this.scheduleNewFile(); // 如果暂停，则重新设置定时器
-      }
+      this.startNewFile();
+      this.scheduleNewFile();
     }, this.newFileInterval);
   }
 
@@ -163,7 +155,10 @@ class PlayerRecorder {
       // 确保所有数据都被写入磁盘
       await new Promise<void>((resolve, reject) => {
         if (this.stream) {
-          this.stream.end(resolve);
+          this.stream.end(() => {
+            this.stream = null;
+            resolve()
+          });
         } else {
           reject(new Error("Stream is not initialized"));
         }
