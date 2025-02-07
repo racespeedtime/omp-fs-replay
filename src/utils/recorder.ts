@@ -9,25 +9,55 @@ interface Event {
   playerId: string; // 添加玩家ID字段以便记录
 }
 
+interface PlayerRecorderOptions {
+  directory: string;
+  flushInterval?: number; // 默认6秒
+  newFileInterval?: number; // 默认30秒
+}
+
 class PlayerRecorder {
   private directory: string;
-  private interval: number;
+  private flushInterval: number;
+  private newFileInterval: number;
   private queue: Event[] = [];
   private currentFile: string | null = null;
   private stream: fs.WriteStream | null = null;
-  private timerId: NodeJS.Timeout | null = null;
+  private flushTimerId: NodeJS.Timeout | null = null;
+  private newFileTimerId: NodeJS.Timeout | null = null;
   private isRecording_: boolean = false;
   private isPaused_: boolean = false;
 
   /**
    * 构造函数
-   * @param directory 日志文件所在的目录路径
-   * @param interval 每隔多少毫秒刷新一次数据（默认6000毫秒）
+   * @param options 配置选项对象
    */
-  constructor(directory: string, interval: number = 6000) {
-    this.directory = directory;
-    this.interval = interval;
+  constructor(options: PlayerRecorderOptions) {
+    this.directory = options.directory;
+    this.flushInterval = options.flushInterval ?? 3 * 1000; // 默认3秒
+    this.newFileInterval = options.newFileInterval ?? 30 * 1000; // 默认30秒
+
+    // 校验时间间隔的合理性
+    if (!this.validateIntervals()) {
+      throw new Error(
+        "Invalid intervals provided. Check the values for flushInterval and newFileInterval."
+      );
+    }
+
     this.init();
+  }
+
+  private validateIntervals(): boolean {
+    const minFlushInterval = 0.5 * 1000; // 最低0.5秒
+    const maxFlushInterval = 60 * 1000; // 最高60秒
+    const minNewFileInterval = 5 * 1000; // 最少5秒
+    const maxNewFileInterval = 10 * 60 * 1000; // 最多10分钟
+
+    return (
+      this.flushInterval >= minFlushInterval &&
+      this.flushInterval <= maxFlushInterval &&
+      this.newFileInterval >= minNewFileInterval &&
+      this.newFileInterval <= maxNewFileInterval
+    );
   }
 
   /**
@@ -39,7 +69,9 @@ class PlayerRecorder {
       fs.mkdirSync(this.directory, { recursive: true });
     }
     this.isRecording_ = true;
+    this.startNewFile();
     this.scheduleFlush();
+    this.scheduleNewFile();
   }
 
   /**
@@ -61,14 +93,13 @@ class PlayerRecorder {
    * 设置定时器以每隔指定时间刷新数据
    */
   private scheduleFlush(): void {
-    this.timerId = setTimeout(() => {
+    this.flushTimerId = setTimeout(() => {
       if (!this.isPaused_) {
         this.flush()
           .then(() => {
-            if (this.queue.length > 0) {
-              this.startNewFile();
+            if (this.queue.length > 0 && this.flushInterval) {
+              this.scheduleFlush();
             }
-            this.scheduleFlush();
           })
           .catch((err) => {
             console.error("Error flushing data:", err);
@@ -76,7 +107,21 @@ class PlayerRecorder {
       } else {
         this.scheduleFlush(); // 如果暂停，则重新设置定时器
       }
-    }, this.interval);
+    }, this.flushInterval);
+  }
+
+  /**
+   * 设置定时器以每隔指定时间创建新的日志文件
+   */
+  private scheduleNewFile(): void {
+    this.newFileTimerId = setTimeout(() => {
+      if (!this.isPaused_) {
+        this.startNewFile();
+        this.scheduleNewFile();
+      } else {
+        this.scheduleNewFile(); // 如果暂停，则重新设置定时器
+      }
+    }, this.newFileInterval);
   }
 
   /**
@@ -147,14 +192,18 @@ class PlayerRecorder {
   public resume(): void {
     this.isPaused_ = false;
     this.scheduleFlush(); // 重新调度刷新任务
+    this.scheduleNewFile(); // 重新调度新文件任务
   }
 
   /**
    * 关闭记录器，确保所有数据都被正确记录
    */
   public close(): void {
-    if (this.timerId) {
-      clearTimeout(this.timerId);
+    if (this.flushTimerId) {
+      clearTimeout(this.flushTimerId);
+    }
+    if (this.newFileTimerId) {
+      clearTimeout(this.newFileTimerId);
     }
     this.flush()
       .then(() => {
