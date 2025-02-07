@@ -12,7 +12,7 @@ interface Event {
 interface PlayerRecorderOptions {
   directory: string;
   flushInterval?: number; // 默认6秒
-  newFileInterval?: number; // 默认30秒
+  newFileInterval?: number; // 默认30秒，如果为0则不分割文件
 }
 
 class PlayerRecorder {
@@ -26,6 +26,7 @@ class PlayerRecorder {
   private newFileTimerId: NodeJS.Timeout | null = null;
   private isRecording_: boolean = false;
   private isPaused_: boolean = false;
+  private nextFileTimestamp: number = 0;
 
   /**
    * 构造函数
@@ -42,14 +43,12 @@ class PlayerRecorder {
         "Invalid intervals provided. Check the values for flushInterval and newFileInterval."
       );
     }
-
-    this.init();
   }
 
   private validateIntervals(): boolean {
     const minFlushInterval = 0.5 * 1000; // 最低0.5秒
     const maxFlushInterval = 60 * 1000; // 最高60秒
-    const minNewFileInterval = 5 * 1000; // 最少5秒
+    const minNewFileInterval = 0; // 允许0表示不分割文件
     const maxNewFileInterval = 10 * 60 * 1000; // 最多10分钟
 
     return (
@@ -57,7 +56,7 @@ class PlayerRecorder {
       this.flushInterval <= maxFlushInterval &&
       this.newFileInterval >= minNewFileInterval &&
       this.newFileInterval <= maxNewFileInterval &&
-      this.newFileInterval >= this.flushInterval
+      (this.newFileInterval === 0 || this.newFileInterval >= this.flushInterval)
     );
   }
 
@@ -65,14 +64,18 @@ class PlayerRecorder {
    * 初始化方法
    * 创建日志目录并启动新的日志文件和定时器
    */
-  private init(): void {
+  public start(): void {
+    if(this.isRecording_) return;
+
     if (!fs.existsSync(this.directory)) {
       fs.mkdirSync(this.directory, { recursive: true });
     }
+
     this.isRecording_ = true;
+    
     this.startNewFile();
-    this.scheduleFlush();
     this.scheduleNewFile();
+    this.scheduleFlush();
   }
 
   /**
@@ -121,6 +124,7 @@ class PlayerRecorder {
    * 设置定时器以每隔指定时间创建新的日志文件
    */
   private scheduleNewFile(): void {
+    if(this.newFileInterval === 0) return;
     this.newFileTimerId = setTimeout(() => {
       this.startNewFile();
       this.scheduleNewFile();
@@ -131,19 +135,13 @@ class PlayerRecorder {
    * 将队列中的所有事件写入当前日志文件
    */
   private async flush(): Promise<void> {
-    if (this.stream && !this.isPaused_ && this.queue.length > 0) {
+    if (this.stream && this.queue.length > 0) {
       // 写入前根据时间戳排序
       this.queue.sort((a, b) => a.timestamp - b.timestamp);
 
       for (const event of this.queue) {
         try {
-          // const isOk = 
-          this.stream!.write(JSON.stringify(event) + "\n");
-          // if (!isOk) {
-          //   await new Promise<void>((resolve) => {
-          //     this.stream!.once("drain", resolve);
-          //   });
-          // }
+          this.stream.write(JSON.stringify(event) + "\n");
         } catch (err) {
           console.error(
             `Error writing event for player ${event.playerId}:`,
@@ -153,15 +151,11 @@ class PlayerRecorder {
       }
       this.queue.length = 0; // 清空队列
       // 确保所有数据都被写入磁盘
-      await new Promise<void>((resolve, reject) => {
-        if (this.stream) {
-          this.stream.end(() => {
-            this.stream = null;
-            resolve()
-          });
-        } else {
-          reject(new Error("Stream is not initialized"));
-        }
+      await new Promise<void>((resolve) => {
+        this.stream!.end(() => {
+          this.stream = null;
+          resolve();
+        });
       });
     }
   }
@@ -171,7 +165,7 @@ class PlayerRecorder {
    * @param event 事件对象
    */
   public recordEvent(event: Event): void {
-    if (!this.isPaused_) {
+    if (this.isRecording_ && !this.isPaused_) {
       event.timestamp = Date.now();
       this.queue.push(event);
     }
@@ -195,33 +189,35 @@ class PlayerRecorder {
    * 暂停记录
    */
   public pause(): void {
-    if (this.isPaused_) return;
-
-    if (this.flushTimerId) {
-      clearTimeout(this.flushTimerId);
-      this.flushTimerId = null;
+    if (!this.isRecording_ || this.isPaused_) return;
+    this.stop();
+    if(this.newFileInterval > 0) {
+      this.nextFileTimestamp = Date.now() + this.newFileInterval
     }
-    if (this.newFileTimerId) {
-      clearTimeout(this.newFileTimerId);
-      this.newFileTimerId = null;
-    }
-    this.isPaused_ = true;
   }
 
   /**
    * 恢复记录
    */
   public resume(): void {
-    if (!this.isPaused_) return;
+    if (this.isRecording_ || !this.isPaused_) return;
+    this.isRecording_ = true;
     this.isPaused_ = false;
-    this.scheduleFlush(); // 重新调度刷新任务
+    if(this.nextFileTimestamp > 0 && Date.now() >= this.nextFileTimestamp) {
+      this.nextFileTimestamp = 0;
+      this.startNewFile()
+    }
     this.scheduleNewFile(); // 重新调度新文件任务
+    this.scheduleFlush(); // 重新调度刷新任务
   }
 
   /**
    * 关闭记录器，确保所有数据都被正确记录
    */
-  public close(): void {
+  public stop(): void {
+    if (!this.isRecording_) return;
+    this.isRecording_ = false;
+    this.isPaused_ = false;
     if (this.flushTimerId) {
       clearTimeout(this.flushTimerId);
       this.flushTimerId = null;
@@ -230,13 +226,8 @@ class PlayerRecorder {
       clearTimeout(this.newFileTimerId);
       this.newFileTimerId = null;
     }
-    this.flush()
-      .then(() => {
-        this.isRecording_ = false;
-      })
-      .catch((err) => {
-        console.error("Error closing recorder:", err);
-      });
+    this.nextFileTimestamp = 0;
+    this.flush();
   }
 }
 
@@ -244,6 +235,8 @@ class PlayerRecorder {
 const recorder = new PlayerRecorder({
   directory: path.join(__dirname, "logs"),
 });
+
+recorder.start()
 
 function simulatePlayerOperations(playerId: string): void {
   setInterval(() => {
@@ -289,5 +282,5 @@ setTimeout(() => {
 
 // 关闭记录器（例如在游戏结束时）
 setTimeout(() => {
-  recorder.close();
+  recorder.stop();
 }, 60000); // 运行1分钟后关闭
