@@ -11,18 +11,38 @@ interface Event {
   playerId: string; // 添加玩家ID字段以便过滤
 }
 
-class PlayerReplayer extends EventEmitter {
+interface ProgressEvent {
+  fileList: string[];
+  totalFiles: number;
+  currentFile: string;
+  currentEvents: number;
+  processedEvents: number;
+}
+
+interface CompleteEvent {}
+
+interface ErrorEvent {
+  error: Error;
+}
+
+interface ReadyEvent {}
+
+interface StoppedEvent {}
+
+class PlayerReplayer {
   private directory: string;
   private isPaused_: boolean = false;
+  private isPlaying_: boolean = false;
+  private isCompleted_: boolean = false;
   private pauseResolve: (() => void) | null = null;
   private playbackSpeed: number = 1; // 默认播放速度为1倍速
   private stopped: boolean = false; // 是否已停止
   private currentTime: number = 0; // 当前播放时间戳
   private files: string[] = []; // 文件路径列表
   private fileEventCount: number = 0; // 总已处理事件数量
+  private eventEmitter: EventEmitter = new EventEmitter(); // 内部创建EventEmitter实例
 
   constructor(directory: string) {
-    super();
     this.directory = directory;
   }
 
@@ -44,6 +64,7 @@ class PlayerReplayer extends EventEmitter {
       }
     } catch (err) {
       console.error("Error loading files:", err);
+      this.eventEmitter.emit("error", { error: err });
       throw err;
     }
   }
@@ -103,6 +124,7 @@ class PlayerReplayer extends EventEmitter {
 
     firstFileStream.on("error", (err) => {
       console.error(`Error reading file ${firstFile}:`, err);
+      this.eventEmitter.emit("error", { error: err });
     });
 
     // Read the last event from the last file to get endTime
@@ -129,6 +151,7 @@ class PlayerReplayer extends EventEmitter {
 
     lastFileStream.on("error", (err) => {
       console.error(`Error reading file ${lastFile}:`, err);
+      this.eventEmitter.emit("error", { error: err });
     });
 
     return { startTime, endTime };
@@ -154,15 +177,20 @@ class PlayerReplayer extends EventEmitter {
     try {
       this.currentTime = options?.startTime ?? 0;
       this.fileEventCount = 0;
+      this.isPlaying_ = true;
+      this.isCompleted_ = false;
 
       for (let i = 0; i < this.files.length; i++) {
         await this.processFile(this.files[i], options);
       }
 
       // 触发完成事件
-      this.emit("complete");
+      this.isCompleted_ = true;
+      this.isPlaying_ = false;
+      this.eventEmitter.emit("complete");
     } catch (err) {
-      this.emit("error", err);
+      this.isPlaying_ = false;
+      this.eventEmitter.emit("error", { error: err });
     }
   }
 
@@ -185,6 +213,7 @@ class PlayerReplayer extends EventEmitter {
     // 错误处理
     fileStream.on("error", (err) => {
       console.error(`Error reading file ${filePath}:`, err);
+      this.eventEmitter.emit("error", { error: err });
     });
 
     // 文件处理完成时的日志
@@ -203,7 +232,8 @@ class PlayerReplayer extends EventEmitter {
       }
 
       if (this.stopped) {
-        this.emit("stopped");
+        this.isPlaying_ = false;
+        this.eventEmitter.emit("stopped");
         break;
       }
 
@@ -225,7 +255,7 @@ class PlayerReplayer extends EventEmitter {
 
         // 触发 ready 事件一次
         if (!firstEventProcessed) {
-          this.emit("ready");
+          this.eventEmitter.emit("ready");
           firstEventProcessed = true;
         }
 
@@ -242,13 +272,13 @@ class PlayerReplayer extends EventEmitter {
         this.currentTime = event.timestamp;
 
         // 触发事件处理事件
-        this.emit("event", event);
+        this.eventEmitter.emit("event", event);
 
         // 触发进度更新事件
         eventCount++;
         this.fileEventCount++;
 
-        this.emit("progress", {
+        this.eventEmitter.emit("progress", {
           fileList: this.files,
           totalFiles: this.files.length,
           currentFile: fileName,
@@ -267,6 +297,20 @@ class PlayerReplayer extends EventEmitter {
    */
   public isPaused(): boolean {
     return this.isPaused_;
+  }
+
+  /**
+   * 获取当前是否正在播放
+   */
+  public isPlaying(): boolean {
+    return this.isPlaying_;
+  }
+
+  /**
+   * 获取当前是否已完成回放
+   */
+  public isCompleted(): boolean {
+    return this.isCompleted_;
   }
 
   /**
@@ -292,6 +336,7 @@ class PlayerReplayer extends EventEmitter {
    */
   public stop(): void {
     this.stopped = true;
+    this.isPlaying_ = false;
     if (this.pauseResolve) {
       this.pauseResolve();
       this.pauseResolve = null;
@@ -303,6 +348,8 @@ class PlayerReplayer extends EventEmitter {
    */
   private resetState(): void {
     this.isPaused_ = false;
+    this.isPlaying_ = false;
+    this.isCompleted_ = false;
     this.pauseResolve = null;
     this.stopped = false;
     this.currentTime = 0;
@@ -328,6 +375,90 @@ class PlayerReplayer extends EventEmitter {
     this.currentTime = Math.max(this.currentTime - seconds, 0); // 确保不小于0
     this.start({ startTime: this.currentTime }); // 从新的时间戳开始重新播放
   }
+
+  /**
+   * 注册事件监听器
+   * @param eventName 事件名称
+   * @param listener 回调函数
+   */
+  public on(eventName: "event", listener: (event: Event) => void): this;
+  public on(
+    eventName: "progress",
+    listener: (progress: ProgressEvent) => void
+  ): this;
+  public on(
+    eventName: "complete",
+    listener: (event: CompleteEvent) => void
+  ): this;
+  public on(eventName: "error", listener: (event: ErrorEvent) => void): this;
+  public on(eventName: "ready", listener: (event: ReadyEvent) => void): this;
+  public on(
+    eventName: "stopped",
+    listener: (event: StoppedEvent) => void
+  ): this;
+  public on(
+    eventName: string | symbol,
+    listener: (...args: any[]) => void
+  ): this {
+    this.eventEmitter.on(eventName, listener);
+    return this;
+  }
+
+  /**
+   * 单次注册事件监听器
+   * @param eventName 事件名称
+   * @param listener 回调函数
+   */
+  public once(eventName: "event", listener: (event: Event) => void): this;
+  public once(
+    eventName: "progress",
+    listener: (progress: ProgressEvent) => void
+  ): this;
+  public once(
+    eventName: "complete",
+    listener: (event: CompleteEvent) => void
+  ): this;
+  public once(eventName: "error", listener: (event: ErrorEvent) => void): this;
+  public once(eventName: "ready", listener: (event: ReadyEvent) => void): this;
+  public once(
+    eventName: "stopped",
+    listener: (event: StoppedEvent) => void
+  ): this;
+  public once(
+    eventName: string | symbol,
+    listener: (...args: any[]) => void
+  ): this {
+    this.eventEmitter.once(eventName, listener);
+    return this;
+  }
+
+  /**
+   * 移除事件监听器
+   * @param eventName 事件名称
+   * @param listener 回调函数
+   */
+  public removeListener(
+    eventName: string | symbol,
+    listener: (...args: any[]) => void
+  ): this {
+    this.eventEmitter.removeListener(eventName, listener);
+    return this;
+  }
+
+  /**
+   * 触发事件
+   * @param eventName 事件名称
+   * @param args 参数列表
+   */
+  public emit(eventName: "event", event: Event): boolean;
+  public emit(eventName: "progress", progress: ProgressEvent): boolean;
+  public emit(eventName: "complete", event: CompleteEvent): boolean;
+  public emit(eventName: "error", event: ErrorEvent): boolean;
+  public emit(eventName: "ready", event: ReadyEvent): boolean;
+  public emit(eventName: "stopped", event: StoppedEvent): boolean;
+  public emit(eventName: string | symbol, ...args: any[]): boolean {
+    return this.eventEmitter.emit(eventName, ...args);
+  }
 }
 
 // 使用示例
@@ -341,25 +472,18 @@ replayer.on("event", (event: Event) => {
   }
 });
 
-replayer.on(
-  "progress",
-  (progress: {
-    currentFile: string;
-    totalFiles: number;
-    processedEvents: number;
-  }) => {
-    console.log(
-      `Processing file ${progress.currentFile}, ${progress.processedEvents} events processed`
-    );
-  }
-);
+replayer.on("progress", (progress: ProgressEvent) => {
+  console.log(
+    `Processing file ${progress.currentFile}, ${progress.processedEvents} events processed`
+  );
+});
 
 replayer.on("complete", () => {
   console.log("Replay completed!");
 });
 
-replayer.on("error", (err: Error) => {
-  console.error("Error during replay:", err);
+replayer.on("error", (event: ErrorEvent) => {
+  console.error("Error during replay:", event.error);
 });
 
 replayer.on("ready", () => {
