@@ -190,7 +190,15 @@ class PlayerRecorder {
    */
   public pause(): void {
     if (!this.isRecording_ || this.isPaused_) return;
-    this.stop();
+    this.isPaused_ = true;
+    if (this.flushTimerId) {
+      clearTimeout(this.flushTimerId);
+      this.flushTimerId = null;
+    }
+    if (this.newFileTimerId) {
+      clearTimeout(this.newFileTimerId);
+      this.newFileTimerId = null;
+    }
     if(this.newFileInterval > 0) {
       this.nextFileTimestamp = Date.now() + this.newFileInterval
     }
@@ -201,7 +209,6 @@ class PlayerRecorder {
    */
   public resume(): void {
     if (this.isRecording_ || !this.isPaused_) return;
-    this.isRecording_ = true;
     this.isPaused_ = false;
     if(this.nextFileTimestamp > 0 && Date.now() >= this.nextFileTimestamp) {
       this.nextFileTimestamp = 0;
