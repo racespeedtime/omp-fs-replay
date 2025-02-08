@@ -19,6 +19,12 @@ interface ProgressEvent {
   processedEvents: number;
 }
 
+interface ReplayOptions {
+  startTime?: number;
+  endTime?: number;
+  playerIds?: string[];
+}
+
 interface CompleteEvent {}
 
 interface ErrorEvent {
@@ -190,11 +196,7 @@ class PlayerReplayer {
    * 开始回放事件
    * @param options 过滤选项，包括startTime、endTime和playerId
    */
-  public async start(options?: {
-    startTime?: number;
-    endTime?: number;
-    playerId?: string;
-  }): Promise<void> {
+  public async start(options?: ReplayOptions): Promise<void> {
     if (this.stopped) {
       this.resetState();
     }
@@ -234,7 +236,7 @@ class PlayerReplayer {
    */
   private async processFile(
     fileName: string,
-    options?: { startTime?: number; endTime?: number; playerId?: string }
+    options?: ReplayOptions
   ): Promise<void> {
     const filePath = path.join(this.directory, fileName);
     const fileStream = fs.createReadStream(filePath);
@@ -286,8 +288,9 @@ class PlayerReplayer {
         if (options) {
           if (options.startTime && event.timestamp < options.startTime)
             continue;
-          if (options.endTime && event.timestamp > options.endTime) continue;
-          if (options.playerId && event.playerId !== options.playerId) continue;
+          if (options.endTime && event.timestamp > options.endTime) break;
+          if (options.playerIds && !options.playerIds.includes(event.playerId))
+            continue;
         }
 
         // 如果当前时间大于事件时间，则跳过该事件
@@ -359,6 +362,123 @@ class PlayerReplayer {
       }
     }
     return events;
+  }
+
+  static findEventsByPlayerAndAction(
+    events: Event[],
+    actionCounts: Record<string, number>,
+    timestamp: number,
+    direction: "before" | "after",
+    playerIds?: string[]
+  ): Record<string, Record<string, Event[]>> {
+    // 对事件按照timestamp排序
+    const events_ = events.sort((a, b) => a.timestamp - b.timestamp);
+
+    // 使用二分查找找到最近的时间戳位置
+    let nearestIndex = -1;
+    if (direction === "before") {
+      nearestIndex = this.binarySearchBefore(events_, timestamp);
+    } else {
+      // direction === 'after'
+      nearestIndex = this.binarySearchAfter(events_, timestamp);
+    }
+
+    if (nearestIndex === -1) return {}; // 如果没有找到合适的事件
+
+    // 根据direction截取事件
+    let filteredEvents: Event[];
+    if (direction === "before") {
+      filteredEvents = events_.slice(0, nearestIndex + 1); // 包括nearestIndex
+    } else {
+      // direction === 'after'
+      filteredEvents = events_.slice(nearestIndex); // 不包括nearestIndex
+    }
+
+    // 如果提供了playerIds，则过滤出这些玩家的所有事件
+    if (playerIds && playerIds.length > 0) {
+      filteredEvents = filteredEvents.filter((event) =>
+        playerIds.includes(event.playerId)
+      );
+    }
+
+    const result: Record<string, Record<string, Event[]>> = {};
+
+    if (playerIds && playerIds.length > 0) {
+      // 如果指定了playerIds，则只处理这些玩家的事件
+      for (const playerId of playerIds) {
+        result[playerId] = {};
+        for (const [action, count] of Object.entries(actionCounts)) {
+          result[playerId][action] = [];
+          for (const event of filteredEvents) {
+            if (
+              event.playerId === playerId &&
+              event.action === action &&
+              result[playerId][action].length < count
+            ) {
+              result[playerId][action].push(event);
+            }
+          }
+        }
+      }
+    } else {
+      // 不指定playerIds时，遍历所有玩家
+      const players = new Set(filteredEvents.map((event) => event.playerId));
+
+      for (const playerId of players) {
+        result[playerId] = {};
+        for (const [action, count] of Object.entries(actionCounts)) {
+          result[playerId][action] = [];
+          for (const event of filteredEvents) {
+            if (
+              event.playerId === playerId &&
+              event.action === action &&
+              result[playerId][action].length < count
+            ) {
+              result[playerId][action].push(event);
+            }
+          }
+        }
+      }
+    }
+
+    return result;
+  }
+
+  // 二分查找：找到小于给定时间戳的最大索引
+  private static binarySearchBefore(
+    events: Event[],
+    timestamp: number
+  ): number {
+    let start = 0;
+    let end = events.length - 1;
+
+    while (start <= end) {
+      const mid = Math.floor((start + end) / 2);
+      if (events[mid].timestamp < timestamp) {
+        start = mid + 1;
+      } else {
+        end = mid - 1;
+      }
+    }
+
+    return end; // 返回小于timestamp的最大索引
+  }
+
+  // 二分查找：找到大于给定时间戳的最小索引
+  private static binarySearchAfter(events: Event[], timestamp: number): number {
+    let start = 0;
+    let end = events.length - 1;
+
+    while (start <= end) {
+      const mid = Math.floor((start + end) / 2);
+      if (events[mid].timestamp > timestamp) {
+        end = mid - 1;
+      } else {
+        start = mid + 1;
+      }
+    }
+
+    return start; // 返回大于timestamp的最小索引
   }
 
   /**
@@ -598,13 +718,13 @@ replayer.getTimeRange().then(({ startTime, endTime }) => {
     replayer.start({
       startTime: startPlaybackTime,
       endTime: endPlaybackTime,
-      playerId: "player1",
+      playerIds: ["player1"],
     });
   }, 20000);
 
   replayer.start({
     startTime: startPlaybackTime,
     endTime: endPlaybackTime,
-    playerId: "player1",
+    // playerIds: "player1",
   });
 });
