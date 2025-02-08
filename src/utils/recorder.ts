@@ -11,8 +11,8 @@ interface Event {
 
 interface PlayerRecorderOptions {
   directory: string;
-  flushInterval?: number; // 默认6秒
-  newFileInterval?: number; // 默认30秒，如果为0则不分割文件
+  flushInterval?: number;
+  newFileInterval?: number;
 }
 
 class PlayerRecorder {
@@ -65,14 +65,14 @@ class PlayerRecorder {
    * 创建日志目录并启动新的日志文件和定时器
    */
   public start(): void {
-    if(this.isRecording_) return;
+    if (this.isRecording_) return;
 
     if (!fs.existsSync(this.directory)) {
       fs.mkdirSync(this.directory, { recursive: true });
     }
 
     this.isRecording_ = true;
-    
+
     this.startNewFile();
     this.scheduleNewFile();
     this.scheduleFlush();
@@ -110,9 +110,7 @@ class PlayerRecorder {
     this.flushTimerId = setTimeout(() => {
       this.flush()
         .then(() => {
-          if (this.queue.length > 0) {
-            this.scheduleFlush();
-          }
+          this.scheduleFlush();
         })
         .catch((err) => {
           console.error("Error flushing data:", err);
@@ -124,7 +122,7 @@ class PlayerRecorder {
    * 设置定时器以每隔指定时间创建新的日志文件
    */
   private scheduleNewFile(): void {
-    if(this.newFileInterval === 0) return;
+    if (this.newFileInterval === 0) return;
     this.newFileTimerId = setTimeout(() => {
       this.startNewFile();
       this.scheduleNewFile();
@@ -168,6 +166,9 @@ class PlayerRecorder {
     if (this.isRecording_ && !this.isPaused_) {
       event.timestamp = Date.now();
       this.queue.push(event);
+      if (this.queue.length >= 512) {
+        this.flush();
+      }
     }
   }
 
@@ -199,8 +200,8 @@ class PlayerRecorder {
       clearTimeout(this.newFileTimerId);
       this.newFileTimerId = null;
     }
-    if(this.newFileInterval > 0) {
-      this.nextFileTimestamp = Date.now() + this.newFileInterval
+    if (this.newFileInterval > 0) {
+      this.nextFileTimestamp = Date.now() + this.newFileInterval;
     }
   }
 
@@ -211,9 +212,9 @@ class PlayerRecorder {
     if (this.isRecording_ || !this.isPaused_) return;
     this.isPaused_ = false;
     this.flush().then(() => {
-      if(this.nextFileTimestamp > 0 && Date.now() >= this.nextFileTimestamp) {
+      if (this.nextFileTimestamp > 0 && Date.now() >= this.nextFileTimestamp) {
         this.nextFileTimestamp = 0;
-        this.startNewFile()
+        this.startNewFile();
       }
       this.scheduleNewFile(); // 重新调度新文件任务
       this.scheduleFlush(); // 重新调度刷新任务
@@ -245,7 +246,7 @@ const recorder = new PlayerRecorder({
   directory: path.join(__dirname, "logs"),
 });
 
-recorder.start()
+recorder.start();
 
 function simulatePlayerOperations(playerId: string): void {
   setInterval(() => {

@@ -119,8 +119,8 @@ class PlayerReplayer {
       this.files[this.files.length - 1]
     );
 
-    let startTime = Infinity;
-    let endTime = -Infinity;
+    let startTime = 0;
+    let endTime = 0;
 
     // Read the first event from the first file to get startTime
     const firstFileStream = fs.createReadStream(firstFile);
@@ -132,10 +132,11 @@ class PlayerReplayer {
     for await (const line of firstFileReader) {
       try {
         const event: Event = JSON.parse(line);
-        startTime = Math.min(startTime, event.timestamp);
+        startTime = event.timestamp;
         break; // Only need the first event
       } catch (err) {
         console.error(`Error parsing line in file ${firstFile}:`, err);
+        this.eventEmitter.emit("error", { error: err });
         continue;
       }
     }
@@ -164,7 +165,7 @@ class PlayerReplayer {
     }
 
     if (lastEvent) {
-      endTime = Math.max(endTime, lastEvent.timestamp);
+      endTime = lastEvent.timestamp;
     }
 
     lastFileStream.on("error", (err) => {
@@ -238,10 +239,10 @@ class PlayerReplayer {
       this.eventEmitter.emit("error", { error: err });
     });
 
-    // 文件处理完成时的日志
-    rl.on("close", () => {
-      console.log(`Finished processing file ${filePath}`);
-    });
+    // // 文件处理完成时的日志
+    // rl.on("close", () => {
+    //   console.log(`Finished processing file ${filePath}`);
+    // });
 
     let eventCount = 0;
     let firstEventProcessed = false;
@@ -318,6 +319,7 @@ class PlayerReplayer {
         });
       } catch (err) {
         console.error(`Error parsing line in file ${filePath}:`, err);
+        this.eventEmitter.emit("error", { error: err });
         continue; // 跳过当前行，继续处理下一行
       }
     }
@@ -325,6 +327,28 @@ class PlayerReplayer {
     if (startTime && endTime) {
       this.fileTimeRanges.set(fileName, { startTime, endTime });
     }
+  }
+
+  /**
+   * 读取某一个文件里的所有events，只建议用于行数不多的时间敏感低频文件
+   */
+  public static async getAllEventsFromFile(filePath: string) {
+    const events: Event[] = [];
+    const fileStream = fs.createReadStream(filePath);
+    const rl = createInterface({
+      input: fileStream,
+      crlfDelay: Infinity,
+    });
+    for await (const line of rl) {
+      try {
+        const event: Event = JSON.parse(line);
+        events.push(event);
+      } catch (err) {
+        console.error(`Error parsing line in file ${filePath}:`, err);
+        continue; // 跳过当前行，继续处理下一行
+      }
+    }
+    return events;
   }
 
   /**
