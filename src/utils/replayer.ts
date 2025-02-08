@@ -44,12 +44,16 @@ class PlayerReplayer {
   private stopped: boolean = false; // 是否已停止
   private currentTime: number = 0; // 当前播放时间戳
   private files: string[] = []; // 文件路径列表
+  private ignoreFiles: string[] = []; // 忽略的文件列表
   private fileTimeRanges: Map<string, FileTimeRange> = new Map();
   private fileEventCount: number = 0; // 总已处理事件数量
   private eventEmitter: EventEmitter = new EventEmitter(); // 内部创建EventEmitter实例
 
-  constructor(directory: string) {
+  constructor(directory: string, ignoreFiles?: string[]) {
     this.directory = directory;
+    if (ignoreFiles) {
+      this.ignoreFiles = ignoreFiles;
+    }
   }
 
   /**
@@ -61,9 +65,15 @@ class PlayerReplayer {
         withFileTypes: true,
       });
       this.files = entries
-        .filter((dirent) => dirent.isFile() && dirent.name.endsWith(".jsonl"))
+        .filter((dirent) => {
+          return (
+            dirent.isFile() &&
+            dirent.name.endsWith(".jsonl") &&
+            !this.ignoreFiles.includes(dirent.name)
+          );
+        })
         .map((dirent) => dirent.name)
-        .sort();
+        .sort((a, b) => +a.split(".jsonl")[0] - +b.split(".jsonl")[0]);
 
       if (this.files.length === 0) {
         throw new Error("No log files found in the directory.");
