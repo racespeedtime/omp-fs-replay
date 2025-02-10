@@ -551,8 +551,8 @@ class PlayerReplayer {
    */
   public forward(seconds: number): void {
     this.stop();
-    this.currentTime += seconds;
-    this.start({ startTime: this.currentTime }); // 从新的时间戳开始重新播放
+    const startTime = this.currentTime + seconds * 1000;
+    this.start({ startTime }); // 从新的时间戳开始重新播放
   }
 
   /**
@@ -561,8 +561,18 @@ class PlayerReplayer {
    */
   public backward(seconds: number): void {
     this.stop();
-    this.currentTime = Math.max(this.currentTime - seconds, 0); // 确保不小于0
-    this.start({ startTime: this.currentTime }); // 从新的时间戳开始重新播放
+    const startTime = Math.max(this.currentTime - seconds * 1000, 0); // 确保不小于0
+    this.start({ startTime }); // 从新的时间戳开始重新播放
+  }
+
+  /**
+   * 从指定秒数播放
+   * @param seconds 秒数
+   */
+  public async seek(seconds: number) {
+    this.stop();
+    const { startTime } = await this.getTimeRange();
+    this.start({ startTime: startTime + Math.min(0, seconds * 1000) }); // 从新的时间戳开始重新播放
   }
 
   /**
