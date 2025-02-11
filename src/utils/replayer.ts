@@ -699,11 +699,11 @@ replayer.getTimeRange().then(({ startTime, endTime }) => {
   console.log(`End Time: ${new Date(endTime).toISOString()}`);
 
   // 示例：从某一段时间开始回放
-  const startPlaybackTime = startTime + 1000 * 60 * 5; // 从开始时间后5分钟开始
-  const endPlaybackTime = endTime - 1000 * 60 * 5; // 在结束时间前5分钟结束
+  // const startPlaybackTime = startTime + 1000 * 60 * 5; // 从开始时间后5分钟开始
+  // const endPlaybackTime = endTime - 1000 * 60 * 5; // 在结束时间前5分钟结束
 
   // 设置播放速度为2倍速
-  replayer.setPlaybackSpeed(2);
+  // replayer.setPlaybackSpeed(2);
 
   // 模拟暂停和恢复
   setTimeout(() => {
@@ -716,25 +716,26 @@ replayer.getTimeRange().then(({ startTime, endTime }) => {
     replayer.resume();
   }, 10000);
 
-  // 模拟停止
-  setTimeout(() => {
-    console.log("Stopping...");
-    replayer.stop();
-  }, 15000);
+  // // 模拟停止
+  // setTimeout(() => {
+  //   console.log("Stopping...");
+  //   replayer.stop();
+  // }, 15000);
 
-  // 再次开始回放
-  setTimeout(() => {
-    console.log("Starting replay again...");
-    replayer.start({
-      startTime: startPlaybackTime,
-      endTime: endPlaybackTime,
-      playerIds: ["player1"],
-    });
-  }, 20000);
+  // // 再次开始回放
+  // setTimeout(() => {
+  //   console.log("Starting replay again...");
+  //   replayer.setPlaybackSpeed(1);
+  //   replayer.start({
+  //     startTime: startTime,
+  //     endTime: endTime,
+  //     // playerIds: ["player1", "player6"],
+  //   });
+  // }, 20000);
 
   replayer.start({
-    startTime: startPlaybackTime,
-    endTime: endPlaybackTime,
+    startTime: startTime,
+    endTime: endTime,
     // playerIds: "player1",
   });
 });
