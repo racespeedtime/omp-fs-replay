@@ -86,6 +86,7 @@ class PlayerRecorder {
       this.stream.end(() => {
         this.createNewFileStream();
       });
+      this.stream = null;
     } else {
       this.createNewFileStream();
     }
@@ -108,13 +109,8 @@ class PlayerRecorder {
    */
   private scheduleFlush(): void {
     this.flushTimerId = setTimeout(() => {
-      this.flush()
-        .then(() => {
-          this.scheduleFlush();
-        })
-        .catch((err) => {
-          console.error("Error flushing data:", err);
-        });
+      this.flush();
+      this.scheduleFlush();
     }, this.flushInterval);
   }
 
@@ -132,7 +128,7 @@ class PlayerRecorder {
   /**
    * 将队列中的所有事件写入当前日志文件
    */
-  private async flush(): Promise<void> {
+  private flush() {
     if (this.stream && this.queue.length > 0) {
       // 写入前根据时间戳排序
       this.queue.sort((a, b) => a.timestamp - b.timestamp);
@@ -148,13 +144,6 @@ class PlayerRecorder {
         }
       }
       this.queue.length = 0; // 清空队列
-      // 确保所有数据都被写入磁盘
-      await new Promise<void>((resolve) => {
-        this.stream!.end(() => {
-          this.stream = null;
-          resolve();
-        });
-      });
     }
   }
 
@@ -209,16 +198,15 @@ class PlayerRecorder {
    * 恢复记录
    */
   public resume(): void {
-    if (this.isRecording_ || !this.isPaused_) return;
+    if (!this.isRecording_ || !this.isPaused_) return;
     this.isPaused_ = false;
-    this.flush().then(() => {
-      if (this.nextFileTimestamp > 0 && Date.now() >= this.nextFileTimestamp) {
-        this.nextFileTimestamp = 0;
-        this.startNewFile();
-      }
-      this.scheduleNewFile(); // 重新调度新文件任务
-      this.scheduleFlush(); // 重新调度刷新任务
-    });
+    this.flush();
+    if (this.nextFileTimestamp > 0 && Date.now() >= this.nextFileTimestamp) {
+      this.nextFileTimestamp = 0;
+      this.startNewFile();
+    }
+    this.scheduleNewFile(); // 重新调度新文件任务
+    this.scheduleFlush(); // 重新调度刷新任务
   }
 
   /**
@@ -238,6 +226,10 @@ class PlayerRecorder {
     }
     this.nextFileTimestamp = 0;
     this.flush();
+    if (this.stream) {
+      this.stream.end();
+      this.stream = null;
+    }
   }
 }
 
@@ -249,20 +241,21 @@ const recorder = new PlayerRecorder({
 recorder.start();
 
 function simulatePlayerOperations(playerId: string): void {
-  setInterval(() => {
-    if (!recorder.isPaused) {
-      const actions = ["move", "jump", "attack"];
-      const directions = ["up", "down", "left", "right"];
-      const action = actions[Math.floor(Math.random() * actions.length)];
-      const direction =
-        directions[Math.floor(Math.random() * directions.length)];
-      recorder.recordEvent({
-        action,
-        value: direction,
-        playerId,
-        timestamp: 0,
-      });
+  const interval = setInterval(() => {
+    if (!recorder.isRecording()) {
+      clearInterval(interval);
+      return;
     }
+    const actions = ["move", "jump", "attack"];
+    const directions = ["up", "down", "left", "right"];
+    const action = actions[Math.floor(Math.random() * actions.length)];
+    const direction = directions[Math.floor(Math.random() * directions.length)];
+    recorder.recordEvent({
+      action,
+      value: direction,
+      playerId,
+      timestamp: 0,
+    });
   }, 100); // 每100毫秒生成一个事件
 }
 
@@ -274,23 +267,20 @@ simulatePlayerOperations("player3");
 simulatePlayerOperations("player4");
 simulatePlayerOperations("player5");
 simulatePlayerOperations("player6");
-simulatePlayerOperations("player7");
-simulatePlayerOperations("player8");
-simulatePlayerOperations("player9");
-simulatePlayerOperations("player10");
 
 // 模拟暂停和恢复
 setTimeout(() => {
   console.log("Pausing recording...");
   recorder.pause();
-}, 5000);
+}, 500);
 
 setTimeout(() => {
   console.log("Resuming recording...");
   recorder.resume();
-}, 10000);
+}, 1000);
 
 // 关闭记录器（例如在游戏结束时）
 setTimeout(() => {
+  console.log("Stopping recording...");
   recorder.stop();
-}, 60000); // 运行1分钟后关闭
+}, 61000); // 运行1分钟后关闭
