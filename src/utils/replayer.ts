@@ -644,6 +644,14 @@ class PlayerReplayer {
     return this;
   }
 
+    /**
+   * 移除所有事件监听器
+   */
+  public removeAllListeners() {
+    this.eventEmitter.removeAllListeners();
+    return this;
+  }
+
   /**
    * 触发事件
    * @param eventName 事件名称
