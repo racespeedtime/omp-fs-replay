@@ -317,17 +317,17 @@ class PlayerReplayer {
           // 开setTimeout线程也要时间，如果间隔过短的话直接当同步处理了
           if (delay > 4) {
             await new Promise((resolve) => setTimeout(resolve, delay));
+            while (this.isPaused_) {
+              await new Promise<void>((resolve) => {
+                if(this.pauseResolve) {
+                  this.pauseResolve();
+                }
+                this.pauseResolve = resolve;
+              });
+            }
           }
         }
 
-        while (this.isPaused_) {
-          await new Promise<void>((resolve) => {
-            if(this.pauseResolve) {
-              this.pauseResolve();
-            }
-            this.pauseResolve = resolve;
-          });
-        }
 
         this.currentTime = event.timestamp;
 
