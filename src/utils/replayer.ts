@@ -216,6 +216,9 @@ class PlayerReplayer {
         const range = this.fileTimeRanges.get(fileName);
         if (!range || range.startTime >= this.currentTime) {
           await this.processFile(fileName, options);
+          if (!this.isPlaying_) {
+            break;
+          }
         }
       }
 
@@ -644,7 +647,7 @@ class PlayerReplayer {
     return this;
   }
 
-    /**
+  /**
    * 移除所有事件监听器
    */
   public removeAllListeners() {
