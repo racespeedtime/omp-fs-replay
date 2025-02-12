@@ -268,6 +268,9 @@ class PlayerReplayer {
     for await (const line of rl) {
       while (this.isPaused_) {
         await new Promise<void>((resolve) => {
+          if(this.pauseResolve) {
+            this.pauseResolve();
+          }
           this.pauseResolve = resolve;
         });
       }
@@ -315,6 +318,15 @@ class PlayerReplayer {
           if (delay > 4) {
             await new Promise((resolve) => setTimeout(resolve, delay));
           }
+        }
+
+        while (this.isPaused_) {
+          await new Promise<void>((resolve) => {
+            if(this.pauseResolve) {
+              this.pauseResolve();
+            }
+            this.pauseResolve = resolve;
+          });
         }
 
         this.currentTime = event.timestamp;
