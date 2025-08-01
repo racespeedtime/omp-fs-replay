@@ -14,16 +14,17 @@ import { HEADER_NAME } from "./constants";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export class Replayer<T = any> {
+  private onStart: PlayOptions<T>['onStart'];
+  private onTick: PlayOptions<T>['onTick'];
+  private onEnd?: PlayOptions<T>['onEnd'];
   private meta!: ReplayMeta;
-  private dataDir: string;
+  private dataDir: PlayOptions<T>['dataDir'];
   private loadedSegments = new Map<number, Map<number, T>>();
-  private onTick: (data: T, meta: TickMeta) => void;
   private currentTimer: NodeJS.Timeout | null = null;
   private currentTick = 0;
   private state: ReplayerState = ReplayerState.Idle;
   private lastPlayedTickMeta?: TickMeta;
   private currentSpeed = 1.0;
-  private onEnd?: () => void;
   private playStartTime = 0;
   private pausedDuration = 0;
   private pauseStartTime = 0;
@@ -31,6 +32,7 @@ export class Replayer<T = any> {
   constructor(options: PlayOptions<T>) {
     this.dataDir = options.dataDir;
     this.currentSpeed = Math.max(0.1, Math.min(options.speed || 1, 10));
+    this.onStart = options.onStart;
     this.onEnd = options.onEnd;
     this.onTick = options.onTick;
   }
@@ -139,7 +141,7 @@ export class Replayer<T = any> {
   }
 
   async play(): Promise<void> {
-    if (this.state === ReplayerState.Playing)
+    if (this.state !== ReplayerState.Idle)
       throw new Error("Already playing");
 
     await this.init();
@@ -150,6 +152,8 @@ export class Replayer<T = any> {
     await this.loadSegment(
       Math.floor(this.currentTick / this.meta.segmentSize)
     );
+
+    this.onStart?.();
     this.processTickAndScheduleNext();
   }
 
