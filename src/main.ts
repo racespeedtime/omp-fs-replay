@@ -1,23 +1,58 @@
-import "./test";
-// 重写思路
+import { promises as fs } from "fs";
+import { SegmentedRecorder } from "./recoder";
+import { SegmentedReplayer } from "./replayer";
 
-// 0. 录制一个0秒的空npc数据(因为数据不重要，并且FCNPC不能用，所以想办法弄一个啥也不干的NPC占位置，同时节省rec文件的磁盘空间和内存占用)，用于后续npc回放池，屏蔽掉所有npc池子里的CarSync/FootSync数据包(return false)，模拟IncomingPacket不会进入到这个回调中。
-// 录制分为高频不敏感事件，比如不在乎是什么车在开，我只关心这个车移动的位置、速度，也就是CarSync数据包
-// 比如是人在走，我不在乎皮肤，我只关心这个人的...FootSync数据包
+const DATA_DIR = "./scriptfiles/replay_data";
 
-// 我们无法主观设置真实玩家的CarSync或FootSync，如果想实现主动操控玩家的车辆，只能让npc接管主驾
-// 玩家坐在副驾，等npc接管完再把玩家放回主驾
-// 这里面又牵扯到多人抢占一辆车的现有的座位等...
+async function setupTestData() {
+  await fs.mkdir(DATA_DIR, { recursive: true });
+}
 
-// 只是做npc回放车辆移动的话，直接创建新的载具按照回放进行模拟IncomingPacket就行
+async function runFullDemo() {
+  await setupTestData();
 
-// 1. recordEvent的时候，一些时间敏感事件，会影响到前进或后退的，同时在时间敏感的单文件里记录相同的这个数据
-// 作为冗余数据，用于前进后退，同时不影响原本的不前进后退的逻辑
-// 比如车辆id变更需要在每一次前进/后退的时候，查找最近的一条数据，并判断是否需要销毁原有载具，
-// 重新把观战的玩家tv到新载具上...
-// 比如赛道cp点，之前的进度他已经到10了，结果回退了，就去找最近的一条同步更新上去
+  // 1. 录制数据
+  const recorder = new SegmentedRecorder(DATA_DIR);
+  const players = [1, 2, 3, 4, 5, 6];
 
-// 同时每一次主动前进/后退都要销毁掉比如之前的某些逻辑创建的cp点，textdraw,3dtext等……
+  for (let i = 0; i < 14400; i++) {
+    await recorder.addTick({
+      tick: i,
+      time: i * (1000 / 30),
+      inputs: [],
+      state: players.map((id) => ({
+        id,
+        x: i,
+        speed: 10,
+        isDrifting: false,
+        isRespawning: i === 5000 && id === 1, // 玩家1在Tick 5000重生
+      })),
+    });
+  }
+  await recorder.finalize(players);
 
+  // 2. 回放测试
+  const replayer = new SegmentedReplayer(DATA_DIR);
+  await replayer.init();
 
+  // 正常播放
+  await replayer.play();
 
+  // 3秒后暂停并跳转
+  setTimeout(async () => {
+    replayer.pause();
+    console.log("\n--- 跳转到玩家1重生时刻 (Tick 5000) ---");
+    await replayer.seekToTick(5000);
+
+    // 检查重生状态
+    console.log("玩家1状态:", replayer.getPlayerState(1));
+
+    // 逐帧前进
+    setTimeout(() => {
+      replayer.stepForward();
+      console.log("玩家1状态:", replayer.getPlayerState(1));
+    }, 500);
+  }, 3000);
+}
+
+runFullDemo();
