@@ -11,9 +11,12 @@ export interface TickMeta {
   segmentIndex: number;
 }
 
-export type PlayOptions = {
+export type PlayOptions<T> = {
   speed?: number;
+  dataDir: string;
+  onStart?: () => void;
   onEnd?: () => void;
+  onTick: (data: T, meta: TickMeta) => void;
 };
 
 export type ReplayConfig = {
@@ -21,3 +24,15 @@ export type ReplayConfig = {
   tickRate?: number;
   debug?: boolean;
 };
+
+export enum RecorderState {
+  Idle = 'idle',
+  Recording = 'recording',
+  Paused = 'paused',
+}
+
+export enum ReplayerState {
+  Idle = 'idle',
+  Playing = 'playing',
+  Paused = 'paused',
+}
