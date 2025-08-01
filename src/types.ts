@@ -1,3 +1,8 @@
+export interface ReplayConfig {
+  debug?: boolean;
+  segmentSize?: number;
+}
+
 export type PlayerAction =
   | { type: 'accelerate'; value: number }
   | { type: 'drift'; angle: number }

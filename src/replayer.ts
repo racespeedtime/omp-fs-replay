@@ -2,9 +2,8 @@ import { performance } from "perf_hooks";
 import { promises as fs } from "fs";
 import { unpack } from "msgpackr";
 import path from "path";
-import { TickData, ProgressCallback, PlayerState } from "./types";
-
-const TICK_INTERVAL_MS = 1000 / 30; // 30 Tick/s
+import { TickData, ProgressCallback, ReplayConfig, PlayerState } from "./types";
+import { TICK_INTERVAL_MS } from "./constants";
 
 export class SegmentedReplayer {
   private segmentSize: number = 1000;
@@ -18,9 +17,17 @@ export class SegmentedReplayer {
   private startTime = 0;
   private timer: NodeJS.Timeout | null = null;
   private onProgress?: ProgressCallback;
+  private debug: boolean;
+  private tickData: TickData[] = []; // 全量Tick缓存（按需填充）
 
-  constructor(dataDir: string) {
+  constructor(dataDir: string, config: ReplayConfig = {}) {
     this.dataDir = dataDir;
+    this.debug = config.debug ?? true;
+    this.segmentSize = config.segmentSize || 1000;
+  }
+
+  private log(...args: unknown[]) {
+    if (this.debug) console.log("[Replayer]", ...args);
   }
 
   async init(): Promise<void> {
@@ -29,6 +36,7 @@ export class SegmentedReplayer {
     );
     this.totalTicks = header.totalTicks;
     this.segmentSize = header.segmentSize;
+    this.log(`初始化完成，总Tick数: ${this.totalTicks}`);
   }
 
   async loadSegment(segmentIndex: number): Promise<void> {
@@ -36,45 +44,32 @@ export class SegmentedReplayer {
 
     const segmentPath = path.join(this.dataDir, `segment_${segmentIndex}.dat`);
     const encoded = await fs.readFile(segmentPath);
-    this.loadedSegments.set(segmentIndex, unpack(encoded) as TickData[]);
+    const segment = unpack(encoded) as TickData[];
+    this.loadedSegments.set(segmentIndex, segment);
 
+    // 填充全量tickData（用于快速跳转）
+    const startTick = segmentIndex * this.segmentSize;
+    segment.forEach((tick, index) => {
+      this.tickData[startTick + index] = tick;
+    });
+
+    this.log(`加载段 ${segmentIndex}`);
     this.onProgress?.(
       segmentIndex + 1,
       Math.ceil(this.totalTicks / this.segmentSize)
     );
   }
 
-  async seekToTick(tick: number): Promise<boolean> {
-    const segmentIndex = Math.floor(tick / this.segmentSize);
-    if (
-      segmentIndex < 0 ||
-      segmentIndex >= Math.ceil(this.totalTicks / this.segmentSize)
-    ) {
-      console.error(`非法跳转: Tick ${tick} 超出范围`);
-      return false;
-    }
-
-    await this.loadSegment(segmentIndex);
-    const segment = this.loadedSegments.get(segmentIndex)!;
-    const frame = segment[tick % this.segmentSize];
-
-    this.currentTick = tick;
-    this.applyState(frame.state);
-    return true;
-  }
-
   private applyState(state: PlayerState[]): void {
     state.forEach((playerState) => {
       if (playerState.isRespawning) {
         playerState.respawnEndTime = performance.now() + 1000;
-        console.log(`玩家 ${playerState.id} 重生状态已修复`);
+        this.log(`玩家 ${playerState.id} 重生状态修复`);
       }
-      console.log(
-        `Tick ${this.currentTick}: 玩家${playerState.id} x=${playerState.x}`
-      );
     });
   }
 
+  // ------------ 核心回放控制 ------------
   async play(): Promise<void> {
     if (this.isPlaying) return;
     this.isPlaying = true;
@@ -82,12 +77,15 @@ export class SegmentedReplayer {
     this.startTime =
       performance.now() -
       (this.currentTick * TICK_INTERVAL_MS) / this.playbackSpeed;
+    this.log(`开始播放 (速度: ${this.playbackSpeed}x)`);
     await this.processTick();
   }
 
   pause(): void {
+    if (!this.isPlaying) return;
     this.isPaused = true;
     if (this.timer) clearTimeout(this.timer);
+    this.log("已暂停");
   }
 
   resume(): void {
@@ -96,6 +94,7 @@ export class SegmentedReplayer {
     this.startTime =
       performance.now() -
       (this.currentTick * TICK_INTERVAL_MS) / this.playbackSpeed;
+    this.log("继续播放");
     this.processTick();
   }
 
@@ -107,8 +106,10 @@ export class SegmentedReplayer {
         performance.now() -
         (this.currentTick * TICK_INTERVAL_MS) / this.playbackSpeed;
     }
+    this.log(`设置播放速度: ${speed}x`);
   }
 
+  // ------------ Tick处理 ------------
   private async processTick(): Promise<void> {
     if (!this.isPlaying || this.isPaused) return;
 
@@ -117,29 +118,53 @@ export class SegmentedReplayer {
       await this.loadSegment(segmentIndex);
     }
 
-    const segment = this.loadedSegments.get(segmentIndex)!;
-    const frame = segment[this.currentTick % this.segmentSize];
+    const frame = this.tickData[this.currentTick];
     if (!frame) {
-      console.log("回放结束");
+      this.log("回放结束");
       return;
     }
 
+    // 处理输入（与录制时逻辑一致）
+    frame.inputs.forEach(({ playerId, action }) => {
+      const player = frame.state.find((p) => p.id === playerId);
+      if (!player) return;
+
+      switch (action.type) {
+        case "accelerate":
+          player.speed += action.value;
+          break;
+        case "drift":
+          player.isDrifting = action.angle > 0;
+          break;
+        case "respawn":
+          player.isRespawning = true;
+          player.respawnEndTime = performance.now() + 1000;
+          break;
+        case "collide":
+          player.speed = Math.max(0, player.speed - 10);
+          break;
+      }
+    });
+
+    // 时间控制
     const now = performance.now();
     const expectedTime = frame.time / this.playbackSpeed;
     const actualTime = now - this.startTime;
     const drift = actualTime - expectedTime;
 
     this.applyState(frame.state);
-    console.log(
-      `[回放] Tick ${frame.tick} (预期: ${expectedTime.toFixed(
-        2
-      )}ms, 实际: ${actualTime.toFixed(2)}ms, 漂移: ${drift.toFixed(2)}ms)`
+    this.log(
+      `Tick ${frame.tick} ` +
+        `(预期: ${expectedTime.toFixed(2)}ms, 实际: ${actualTime.toFixed(
+          2
+        )}ms, 漂移: ${drift.toFixed(2)}ms)`
     );
 
+    // 下一帧
     this.currentTick++;
     const nextFrame = this.tickData[this.currentTick];
     if (!nextFrame) {
-      console.log("回放结束");
+      this.log("回放结束");
       return;
     }
 
@@ -150,6 +175,23 @@ export class SegmentedReplayer {
     );
   }
 
+  // ------------ 精确控制 ------------
+  async seekToTick(tick: number): Promise<boolean> {
+    if (tick < 0 || tick >= this.totalTicks) {
+      this.log(`非法跳转: Tick ${tick} 超出范围 [0, ${this.totalTicks - 1}]`);
+      return false;
+    }
+
+    const segmentIndex = Math.floor(tick / this.segmentSize);
+    await this.loadSegment(segmentIndex);
+
+    this.currentTick = tick;
+    const frame = this.tickData[tick];
+    this.applyState(frame.state);
+    this.log(`跳转到 Tick ${tick}`);
+    return true;
+  }
+
   stepForward() {
     return this.seekToTick(this.currentTick + 1);
   }
@@ -158,11 +200,8 @@ export class SegmentedReplayer {
     return this.seekToTick(this.currentTick - 1);
   }
 
-  getPlayerState(playerId: number) {
-    const segmentIndex = Math.floor(this.currentTick / this.segmentSize);
-    const segment = this.loadedSegments.get(segmentIndex);
-    if (!segment) return undefined;
-    const frame = segment[this.currentTick % this.segmentSize];
-    return frame.state.find((p) => p.id === playerId);
+  getPlayerState(playerId: number): PlayerState | undefined {
+    const frame = this.tickData[this.currentTick];
+    return frame?.state.find((p) => p.id === playerId);
   }
 }
