@@ -12,7 +12,7 @@ async function testRecorder() {
 
   // 录制一些数据
   for (let i = 0; i < 1500; i++) {
-    await recorder.record(i, { value: i, timestamp: Date.now() });
+    await recorder.record({ value: i, timestamp: Date.now() });
   }
 
   const meta = await recorder.stop();
@@ -21,7 +21,7 @@ async function testRecorder() {
   // 2. 测试回放
   const replayer = new Replayer({
     dataDir,
-    speed: 1,
+    speed: 1.1,
     onEnd: () => console.log("Playback finished"),
     onTick: (data, meta) => {
       console.log(`[${meta.time}ms] Tick ${meta.tick}:`, data);

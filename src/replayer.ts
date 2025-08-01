@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { unpack } from "msgpackr";
@@ -16,19 +17,28 @@ export class Replayer<T = any> {
   private lastPlayedTickMeta?: TickMeta;
   private currentSpeed = 1.0;
   private onEnd?: () => void;
-  private onStart?: () => void;
+  private playStartTime = 0;
+  private pausedDuration = 0;
+  private pauseStartTime = 0;
 
   constructor(options: PlayOptions<T>) {
     this.dataDir = options.dataDir;
     this.currentSpeed = Math.max(0.1, Math.min(options.speed || 1, 10));
-    this.onStart = options.onStart
     this.onEnd = options.onEnd;
     this.onTick = options.onTick;
   }
 
+  private getExpectedTick(): number {
+    if (this.state !== ReplayerState.Playing) return this.currentTick;
+    const elapsed =
+      performance.now() - this.playStartTime - this.pausedDuration;
+    return Math.floor(
+      (elapsed * this.meta.tickRate * this.currentSpeed) / 1000
+    );
+  }
+
   async init(): Promise<void> {
     if (this.meta) return;
-
     this.meta = JSON.parse(
       await fs.readFile(path.join(this.dataDir, HEADER_NAME), "utf-8")
     );
@@ -52,11 +62,9 @@ export class Replayer<T = any> {
 
   private async loadSegment(index: number): Promise<void> {
     if (this.loadedSegments.has(index)) return;
-
     const { data } = unpack(
       await fs.readFile(path.join(this.dataDir, `segment_${index}.dat`))
     ) as { data: Record<number, T> };
-
     this.loadedSegments.set(
       index,
       new Map(Object.entries(data).map(([k, v]) => [parseInt(k), v]))
@@ -71,42 +79,33 @@ export class Replayer<T = any> {
     const data = segment.get(tick);
     if (!data) return null;
 
-    const meta: TickMeta = {
-      tick,
-      time: (tick / this.meta.tickRate) * 1000,
-      segmentIndex,
+    return {
+      data,
+      meta: {
+        tick,
+        time: (tick / this.meta.tickRate) * 1000,
+        segmentIndex,
+      },
     };
-
-    return { data, meta };
   }
 
-  setSpeed(speed: number): void {
-    if (this.state !== ReplayerState.Playing) {
-      throw new Error("Cannot set speed when not playing");
-    }
-
-    this.currentSpeed = Math.max(0.1, Math.min(speed, 10));
-
-    if (this.currentTimer) {
-      clearTimeout(this.currentTimer);
-      this.scheduleNextTick();
+  private syncToRealTime(): void {
+    const expectedTick = this.getExpectedTick();
+    if (expectedTick > this.currentTick) {
+      this.seek(expectedTick); // 自动追赶
     }
   }
 
   private scheduleNextTick(): void {
     if (this.state !== ReplayerState.Playing) return;
 
-    const currentResult = this.getTickData(this.currentTick);
-    const nextResult = this.getTickData(this.currentTick + 1);
+    const now = performance.now();
+    const nextTickTime = this.lastPlayedTickMeta
+      ? this.lastPlayedTickMeta.time + 1000 / this.meta.tickRate
+      : now;
 
-    if (!currentResult || !nextResult) {
-      this.stop();
-      this.onEnd?.();
-      return;
-    }
+    const delay = Math.max(0, (nextTickTime - now) / this.currentSpeed);
 
-    const delay =
-      (nextResult.meta.time - currentResult.meta.time) / this.currentSpeed;
     this.currentTimer = setTimeout(() => {
       this.currentTick++;
       this.processTickAndScheduleNext();
@@ -123,50 +122,35 @@ export class Replayer<T = any> {
 
     this.onTick(result.data, result.meta);
     this.lastPlayedTickMeta = result.meta;
-
+    this.syncToRealTime(); // 每帧后检查时间同步
     this.scheduleNextTick();
   }
 
   async play(): Promise<void> {
-    if (this.state === ReplayerState.Playing) {
+    if (this.state === ReplayerState.Playing)
       throw new Error("Already playing");
-    }
 
     await this.init();
     this.state = ReplayerState.Playing;
+    this.playStartTime = performance.now();
+    this.pausedDuration = 0;
 
     await this.loadSegment(
       Math.floor(this.currentTick / this.meta.segmentSize)
     );
-
-    const initialResult = this.getTickData(this.currentTick);
-    if (initialResult) {
-      this.onStart?.();
-      this.onTick(initialResult.data, initialResult.meta);
-      this.lastPlayedTickMeta = initialResult.meta;
-      this.currentTick++;
-    }
-
-    this.scheduleNextTick();
+    this.processTickAndScheduleNext();
   }
 
   pause(): void {
-    if (this.state !== ReplayerState.Playing) {
-      throw new Error("Cannot pause when not playing");
-    }
-
+    if (this.state !== ReplayerState.Playing) throw new Error("Not playing");
     this.state = ReplayerState.Paused;
-    if (this.currentTimer) {
-      clearTimeout(this.currentTimer);
-      this.currentTimer = null;
-    }
+    this.pauseStartTime = performance.now();
+    if (this.currentTimer) clearTimeout(this.currentTimer);
   }
 
   resume(): void {
-    if (this.state !== ReplayerState.Paused) {
-      throw new Error("Cannot resume when not paused");
-    }
-
+    if (this.state !== ReplayerState.Paused) throw new Error("Not paused");
+    this.pausedDuration += performance.now() - this.pauseStartTime;
     this.play();
   }
 
@@ -187,6 +171,19 @@ export class Replayer<T = any> {
     if (result) {
       this.onTick(result.data, result.meta);
       this.lastPlayedTickMeta = result.meta;
+    }
+  }
+
+  setSpeed(speed: number): void {
+    if (this.state !== ReplayerState.Playing) {
+      throw new Error("Cannot set speed when not playing");
+    }
+
+    this.currentSpeed = Math.max(0.1, Math.min(speed, 10));
+
+    if (this.currentTimer) {
+      clearTimeout(this.currentTimer);
+      this.scheduleNextTick();
     }
   }
 

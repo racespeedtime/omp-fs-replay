@@ -1,7 +1,8 @@
+import { performance } from 'node:perf_hooks';
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { pack } from "msgpackr";
-import { ReplayMeta, ReplayConfig, RecorderState } from "./types";
+import { ReplayMeta, ReplayConfig } from "./types";
 import { HEADER_NAME, SEGMENT_SIZE, TICK_MS } from "./constants";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -11,8 +12,11 @@ export class Recorder<T = any> {
   private dataDir: string;
   private currentSegment: Map<number, T> = new Map();
   private segmentIndex = 0;
-  private state: RecorderState = RecorderState.Idle;
-  private pausedData: { lastTick?: number } = {};
+  private state: "idle" | "recording" | "paused" = "idle";
+  private startTime: number = 0;
+  private lastFlushTick: number = 0;
+  private pausedDuration: number = 0;
+  private pauseStartTime: number = 0;
 
   constructor(dataDir: string, config: ReplayConfig = {}) {
     this.dataDir = dataDir;
@@ -20,20 +24,22 @@ export class Recorder<T = any> {
     this.tickRate = config.tickRate || TICK_MS;
   }
 
-  getState(): RecorderState {
-    return this.state;
-  }
-
-  getCurrentSegmentSize(): number {
-    return this.currentSegment.size;
+  private getCurrentTick(): number {
+    if (this.state !== "recording") return 0;
+    const elapsed = performance.now() - this.startTime - this.pausedDuration;
+    return Math.floor(elapsed * this.tickRate / 1000);
   }
 
   async start(): Promise<void> {
-    if (this.state !== RecorderState.Idle) {
-      throw new Error(`Cannot start recording in ${this.state} state`);
+    if (this.state !== "idle") {
+      throw new Error(`Cannot start in ${this.state} state`);
     }
 
     await fs.mkdir(this.dataDir, { recursive: true });
+    this.startTime = performance.now();
+    this.pausedDuration = 0;
+    this.lastFlushTick = 0;
+
     await fs.writeFile(
       path.join(this.dataDir, HEADER_NAME),
       JSON.stringify({
@@ -44,45 +50,40 @@ export class Recorder<T = any> {
       } as ReplayMeta)
     );
 
-    this.state = RecorderState.Recording;
-    this.segmentIndex = 0;
-    this.currentSegment.clear();
-    this.pausedData = {};
+    this.state = "recording";
   }
 
-  async pause(): Promise<void> {
-    if (this.state !== RecorderState.Recording) {
-      throw new Error(`Cannot pause recording in ${this.state} state`);
-    }
-    
-    await this.flushSegment();
-    this.pausedData.lastTick = Array.from(this.currentSegment.keys()).pop();
-    this.state = RecorderState.Paused;
-  }
-
-  async resume(): Promise<void> {
-    if (this.state !== RecorderState.Paused) {
-      throw new Error(`Cannot resume recording in ${this.state} state`);
-    }
-    
-    this.state = RecorderState.Recording;
-  }
-
-  async record(tick: number, data: T): Promise<void> {
-    if (this.state !== RecorderState.Recording) {
+  async record(data: T): Promise<void> {
+    if (this.state !== "recording") {
       throw new Error(`Cannot record in ${this.state} state`);
     }
 
-    // 检查tick顺序
-    if (this.pausedData.lastTick !== undefined && tick <= this.pausedData.lastTick) {
-      throw new Error(`Invalid tick sequence: ${tick} <= ${this.pausedData.lastTick}`);
-    }
+    const currentTick = this.getCurrentTick();
+    this.currentSegment.set(currentTick, data);
 
-    this.currentSegment.set(tick, data);
-
-    if (this.currentSegment.size >= this.segmentSize) {
+    if (currentTick - this.lastFlushTick >= this.segmentSize) {
       await this.flushSegment();
+      this.lastFlushTick = currentTick;
     }
+  }
+
+  async pause(): Promise<void> {
+    if (this.state !== "recording") {
+      throw new Error(`Cannot pause in ${this.state} state`);
+    }
+
+    await this.flushSegment();
+    this.pauseStartTime = performance.now();
+    this.state = "paused";
+  }
+
+  async resume(): Promise<void> {
+    if (this.state !== "paused") {
+      throw new Error(`Cannot resume in ${this.state} state`);
+    }
+
+    this.pausedDuration += performance.now() - this.pauseStartTime;
+    this.state = "recording";
   }
 
   private async flushSegment(): Promise<void> {
@@ -105,28 +106,25 @@ export class Recorder<T = any> {
   }
 
   async stop(): Promise<ReplayMeta> {
-    if (this.state === RecorderState.Idle) {
-      throw new Error("Cannot stop recording when not started");
+    if (this.state === "idle") {
+      throw new Error("Cannot stop when not started");
+    }
+
+    if (this.state === "paused") {
+      this.pausedDuration += performance.now() - this.pauseStartTime;
     }
 
     await this.flushSegment();
+    const finalTick = this.getCurrentTick();
 
     const meta: ReplayMeta = JSON.parse(
       await fs.readFile(path.join(this.dataDir, HEADER_NAME), "utf-8")
     );
 
-    meta.totalTicks = this.segmentIndex * this.segmentSize + this.currentSegment.size;
-    await fs.writeFile(
-      path.join(this.dataDir, HEADER_NAME),
-      JSON.stringify(meta)
-    );
+    meta.totalTicks = finalTick;
+    await fs.writeFile(path.join(this.dataDir, HEADER_NAME), JSON.stringify(meta));
 
-    this.state = RecorderState.Idle;
+    this.state = "idle";
     return meta;
-  }
-
-  async discard(): Promise<void> {
-    this.stop();
-    await fs.rm(this.dataDir, { recursive: true, force: true });
   }
 }
