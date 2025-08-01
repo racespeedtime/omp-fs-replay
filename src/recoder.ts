@@ -1,69 +1,77 @@
-import { performance } from 'perf_hooks';
-import { promises as fs } from 'fs';
-import { pack } from 'msgpackr';
-import path from 'path';
-import { TickData, ReplayConfig, PlayerAction } from './types';
+import { promises as fs } from "fs";
+import path from "path";
+import { pack } from "msgpackr";
+import { ReplayMeta, ReplayConfig } from "./types";
+import { HEADER_NAME, SEGMENT_SIZE, TICK_MS } from "./constants";
 
-export class Recorder {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export class Recorder<T = any> {
   private segmentSize: number;
-  private currentSegment: TickData[] = [];
-  private segmentIndex = 0;
+  private tickRate: number;
   private dataDir: string;
-  private isRecording = false;
-  private isPaused = false;
-  private startTime = 0;
-  private currentTick = 0;
-  private debug: boolean;
+  private currentSegment: Map<number, T> = new Map();
+  private segmentIndex = 0;
 
   constructor(dataDir: string, config: ReplayConfig = {}) {
     this.dataDir = dataDir;
-    this.segmentSize = config.segmentSize || 1000;
-    this.debug = config.debug ?? true;
+    this.segmentSize = config.segmentSize || SEGMENT_SIZE;
+    this.tickRate = config.tickRate || TICK_MS;
   }
 
-  start(): void {
-    this.isRecording = true;
-    this.startTime = performance.now();
-    this.currentTick = 0;
-    this.log('录制开始');
+  async start(): Promise<void> {
+    await fs.mkdir(this.dataDir, { recursive: true });
+
+    await fs.writeFile(
+      path.join(this.dataDir, HEADER_NAME),
+      JSON.stringify({
+        createdAt: new Date().toISOString(),
+        tickRate: this.tickRate,
+        segmentSize: this.segmentSize,
+        totalTicks: 0,
+      } as ReplayMeta)
+    );
   }
 
-  addInput(playerId: number, action: PlayerAction): void {
-    if (!this.isRecording || this.isPaused) return;
-    const currentTime = performance.now() - this.startTime;
-    const tick = Math.floor(currentTime / (1000 / 30)); // 计算当前Tick
+  async record(tick: number, data: T): Promise<void> {
+    this.currentSegment.set(tick, data);
 
-    // 确保时间轴连续
-    while (this.currentTick <= tick) {
-      this.currentSegment.push({
-        tick: this.currentTick,
-        time: this.currentTick * (1000 / 30),
-        inputs: this.currentTick === tick ? [{ playerId, action }] : []
-      });
-      this.currentTick++;
-    }
-
-    if (this.currentSegment.length >= this.segmentSize) {
-      this.saveCurrentSegment();
+    if (this.currentSegment.size >= this.segmentSize) {
+      await this.flushSegment();
     }
   }
 
-  private async saveCurrentSegment(): Promise<void> {
-    const segmentPath = path.join(this.dataDir, `segment_${this.segmentIndex}.dat`);
-    await fs.writeFile(segmentPath, pack(this.currentSegment));
+  private async flushSegment(): Promise<void> {
+    const ticks = Array.from(this.currentSegment.keys()).sort((a, b) => a - b);
+    if (ticks.length === 0) return;
+
+    const segmentData = {
+      firstTick: ticks[0],
+      lastTick: ticks[ticks.length - 1],
+      data: Object.fromEntries(this.currentSegment),
+    };
+
+    await fs.writeFile(
+      path.join(this.dataDir, `segment_${this.segmentIndex}.dat`),
+      pack(segmentData)
+    );
+
+    this.currentSegment.clear();
     this.segmentIndex++;
-    this.currentSegment = [];
   }
 
-  async stop(): Promise<void> {
-    if (this.currentSegment.length > 0) {
-      await this.saveCurrentSegment();
-    }
-    this.isRecording = false;
-    this.log('录制停止');
-  }
+  async stop(): Promise<ReplayMeta> {
+    await this.flushSegment();
 
-  private log(...args: unknown[]) {
-    if (this.debug) console.log('[Recorder]', ...args);
+    const meta: ReplayMeta = JSON.parse(
+      await fs.readFile(path.join(this.dataDir, HEADER_NAME), "utf-8")
+    );
+
+    meta.totalTicks = this.segmentIndex * this.segmentSize;
+    await fs.writeFile(
+      path.join(this.dataDir, HEADER_NAME),
+      JSON.stringify(meta)
+    );
+
+    return meta;
   }
 }

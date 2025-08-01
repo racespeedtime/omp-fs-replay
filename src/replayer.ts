@@ -1,127 +1,113 @@
-import { performance } from 'perf_hooks';
-import { promises as fs } from 'fs';
-import { unpack } from 'msgpackr';
-import path from 'path';
-import { TickData, ProcessInputsFn, ApplyStateFn, ReplayConfig } from './types';
+import { promises as fs } from "fs";
+import path from "path";
+import { unpack } from "msgpackr";
+import { ReplayMeta, TickMeta, PlayOptions } from "./types";
+import { HEADER_NAME } from "./constants";
 
-const TICK_INTERVAL_MS = 1000 / 30;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export interface ReplayerOptions<T = any> {
+  dataDir: string;
+  processTick: (data: T, meta: TickMeta) => void;
+}
 
-export class Replayer {
-  private segmentSize: number;
-  private totalTicks: number = 0;
-  private loadedSegments = new Map<number, TickData[]>();
-  private dataDir: string;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export class Replayer<T = any> {
+  private meta!: ReplayMeta;
+  private dataDir: ReplayerOptions<T>["dataDir"];
+  private loadedSegments = new Map<number, Map<number, T>>();
+  private processTick?: ReplayerOptions<T>["processTick"];
+  private currentTimer: NodeJS.Timeout | null = null;
   private currentTick = 0;
-  private isPlaying = false;
-  private isPaused = false;
-  private playbackSpeed = 1.0;
-  private startTime = 0;
-  private timer: NodeJS.Timeout | null = null;
-  private debug: boolean;
-  private processInputs: ProcessInputsFn;
-  private applyState: ApplyStateFn;
-  private currentState: PlayerState[] = [];
 
-  constructor(
-    dataDir: string,
-    processInputs: ProcessInputsFn,
-    applyState: ApplyStateFn,
-    config: ReplayConfig = {}
-  ) {
-    this.dataDir = dataDir;
-    this.processInputs = processInputs;
-    this.applyState = applyState;
-    this.segmentSize = config.segmentSize || 1000;
-    this.debug = config.debug ?? true;
+  constructor(options: ReplayerOptions<T>) {
+    this.dataDir = options.dataDir;
+    this.processTick = options.processTick;
   }
 
-  async init(initialState: PlayerState[]): Promise<void> {
-    const header = JSON.parse(
-      await fs.readFile(path.join(this.dataDir, 'header.json'), 'utf-8')
+  async initialize(): Promise<ReplayMeta> {
+    this.meta = JSON.parse(
+      await fs.readFile(path.join(this.dataDir, HEADER_NAME), "utf-8")
     );
-    this.totalTicks = header.totalTicks;
-    this.currentState = initialState;
-    this.log('回放初始化完成');
+    return this.meta;
   }
 
-  private async loadSegment(segmentIndex: number): Promise<void> {
-    if (this.loadedSegments.has(segmentIndex)) return;
-    const segmentPath = path.join(this.dataDir, `segment_${segmentIndex}.dat`);
-    const segment = unpack(await fs.readFile(segmentPath)) as TickData[];
-    this.loadedSegments.set(segmentIndex, segment);
-    this.log(`加载段 ${segmentIndex}`);
+  private async loadSegment(index: number): Promise<void> {
+    if (this.loadedSegments.has(index)) return;
+
+    const { data } = unpack(
+      await fs.readFile(path.join(this.dataDir, `segment_${index}.dat`))
+    ) as { data: Record<number, T> };
+
+    this.loadedSegments.set(
+      index,
+      new Map(Object.entries(data).map(([k, v]) => [parseInt(k), v]))
+    );
   }
 
-  private getFrame(tick: number): TickData | null {
-    const segmentIndex = Math.floor(tick / this.segmentSize);
+  private getTickData(tick: number): { data: T; meta: TickMeta } | null {
+    const segmentIndex = Math.floor(tick / this.meta.segmentSize);
     const segment = this.loadedSegments.get(segmentIndex);
-    return segment?.[tick % this.segmentSize] ?? null;
+    if (!segment) return null;
+
+    const data = segment.get(tick);
+    if (!data) return null;
+
+    return {
+      data,
+      meta: {
+        tick,
+        time: (tick / this.meta.tickRate) * 1000,
+        segmentIndex,
+      },
+    };
   }
 
-  async play(): Promise<void> {
-    if (this.isPlaying) return;
-    this.isPlaying = true;
-    this.isPaused = false;
-    this.startTime = performance.now() - (this.currentTick * TICK_INTERVAL_MS / this.playbackSpeed);
-    this.log('开始播放');
-    await this.processTick();
+  async play(options: PlayOptions = {}): Promise<void> {
+    const speed = Math.max(0.1, Math.min(options.speed || 1, 10));
+    await this.loadSegment(
+      Math.floor(this.currentTick / this.meta.segmentSize)
+    );
+
+    const playTick = async () => {
+      const result = this.getTickData(this.currentTick);
+      if (!result || !this.processTick) {
+        options.onEnd?.();
+        return;
+      }
+
+      this.processTick(result.data, result.meta);
+      this.currentTick++;
+
+      const nextResult = this.getTickData(this.currentTick);
+      if (!nextResult) {
+        options.onEnd?.();
+        return;
+      }
+
+      const delay = (nextResult.meta.time - result.meta.time) / speed;
+      this.currentTimer = setTimeout(playTick, delay);
+    };
+
+    playTick();
   }
 
-  private async processTick(): Promise<void> {
-    if (!this.isPlaying || this.isPaused) return;
+  async seek(tick: number): Promise<void> {
+    this.stop();
+    this.currentTick = tick;
 
-    const frame = this.getFrame(this.currentTick);
-    if (!frame) {
-      this.log('回放结束');
-      return;
-    }
-
-    // 正常播放时处理输入
-    if (frame.inputs.length > 0) {
-      this.currentState = this.processInputs(frame.inputs, this.currentState);
-    }
-
-    this.applyState(this.currentState);
-    this.currentTick++;
-
-    // 下一帧
-    const nextFrame = this.getFrame(this.currentTick);
-    if (!nextFrame) {
-      this.log('回放结束');
-      return;
-    }
-
-    const delay = (nextFrame.time - frame.time) / this.playbackSpeed;
-    this.timer = setTimeout(() => this.processTick(), delay);
-  }
-
-  async seekToTick(tick: number): Promise<boolean> {
-    if (tick < 0 || tick >= this.totalTicks) {
-      this.log(`非法跳转: Tick ${tick} 超出范围`);
-      return false;
-    }
-
-    // 跳转时直接计算目标状态（不处理中间输入）
-    const segmentIndex = Math.floor(tick / this.segmentSize);
+    const segmentIndex = Math.floor(tick / this.meta.segmentSize);
     await this.loadSegment(segmentIndex);
 
-    // 重置状态到初始值，然后重新处理所有输入直到目标Tick
-    let state = [...this.initialState];
-    for (let i = 0; i <= tick; i++) {
-      const frame = this.getFrame(i);
-      if (frame?.inputs.length > 0) {
-        state = this.processInputs(frame.inputs, state);
-      }
+    const result = this.getTickData(tick);
+    if (result && this.processTick) {
+      this.processTick(result.data, result.meta);
     }
-
-    this.currentState = state;
-    this.currentTick = tick;
-    this.applyState(state);
-    this.log(`跳转到 Tick ${tick}`);
-    return true;
   }
 
-  private log(...args: any[]) {
-    if (this.debug) console.log('[Replayer]', ...args);
+  stop(): void {
+    if (this.currentTimer) {
+      clearTimeout(this.currentTimer);
+      this.currentTimer = null;
+    }
   }
 }
