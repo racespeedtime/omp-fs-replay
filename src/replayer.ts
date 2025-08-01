@@ -116,14 +116,12 @@ export class Replayer<T = any> {
     if (delay < 4) {
       this.currentTick++;
       this.processTickAndScheduleNext();
-    }
-    else {
+    } else {
       this.currentTimer = setTimeout(() => {
         this.currentTick++;
         this.processTickAndScheduleNext();
       }, delay);
     }
-
   }
 
   private processTickAndScheduleNext(): void {
@@ -283,5 +281,11 @@ export class Replayer<T = any> {
       }
     }
     return result;
+  }
+
+  unloadDistantSegments(currentSegmentIndex: number) {
+    Array.from(this.loadedSegments.keys())
+      .filter((index) => Math.abs(index - currentSegmentIndex) > 3)
+      .forEach((index) => this.loadedSegments.delete(index));
   }
 }
