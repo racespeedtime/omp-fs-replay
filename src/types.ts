@@ -1,9 +1,4 @@
-export interface ReplayConfig {
-  debug?: boolean;
-  segmentSize?: number;
-}
-
-export type PlayerAction =
+export type PlayerAction = 
   | { type: 'accelerate'; value: number }
   | { type: 'drift'; angle: number }
   | { type: 'respawn' }
@@ -25,4 +20,14 @@ export interface TickData {
   state: PlayerState[];
 }
 
-export type ProgressCallback = (loaded: number, total: number) => void;
+export type ProcessInputsFn = (
+  inputs: { playerId: number; action: PlayerAction }[],
+  prevState: PlayerState[]
+) => PlayerState[];
+
+export type ApplyStateFn = (state: PlayerState[]) => void;
+
+export interface ReplayConfig {
+  debug?: boolean;
+  segmentSize?: number;
+}
