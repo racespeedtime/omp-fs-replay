@@ -36,7 +36,7 @@ export class Recorder<T = any> {
   }
 
   async start(): Promise<void> {
-    if (this.state !== "idle") {
+    if (this.state !== RecorderState.Idle) {
       throw new Error(`Cannot start in ${this.state} state`);
     }
 
@@ -69,7 +69,10 @@ export class Recorder<T = any> {
     const currentTick = this.getCurrentTick();
     this.currentSegment.set(currentTick, data);
 
-    if (currentTick % this.segmentSize === 0 || currentTick - this.lastFlushTick >= this.segmentSize) {
+    if (
+      currentTick % this.segmentSize === 0 ||
+      currentTick - this.lastFlushTick >= this.segmentSize
+    ) {
       await this.flushSegment();
       this.lastFlushTick = currentTick;
     }
@@ -102,9 +105,10 @@ export class Recorder<T = any> {
     if (this.isFlushing) return;
     this.isFlushing = true;
 
-
     try {
-      const ticks = Array.from(this.currentSegment.keys()).sort((a, b) => a - b);
+      const ticks = Array.from(this.currentSegment.keys()).sort(
+        (a, b) => a - b
+      );
       if (ticks.length === 0) return;
 
       const segmentData = {
@@ -120,16 +124,13 @@ export class Recorder<T = any> {
 
       this.currentSegment.clear();
       this.segmentIndex++;
-
-    }
-    finally {
+    } finally {
       this.isFlushing = false;
     }
-
   }
 
   async stop(): Promise<ReplayMeta> {
-    if (this.state === "idle") {
+    if (this.state === RecorderState.Idle) {
       throw new Error("Cannot stop when not started");
     }
 
