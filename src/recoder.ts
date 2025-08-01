@@ -1,8 +1,8 @@
-import { performance } from 'node:perf_hooks';
+import { performance } from "node:perf_hooks";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { pack } from "msgpackr";
-import { ReplayMeta, ReplayConfig } from "./types";
+import { ReplayMeta, ReplayConfig, RecorderState } from "./types";
 import { HEADER_NAME, SEGMENT_SIZE, TICK_MS } from "./constants";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -12,11 +12,12 @@ export class Recorder<T = any> {
   private dataDir: string;
   private currentSegment: Map<number, T> = new Map();
   private segmentIndex = 0;
-  private state: "idle" | "recording" | "paused" = "idle";
+  private state: RecorderState = RecorderState.Idle;
   private startTime: number = 0;
   private lastFlushTick: number = 0;
   private pausedDuration: number = 0;
   private pauseStartTime: number = 0;
+  private isFlushing = false;
 
   constructor(dataDir: string, config: ReplayConfig = {}) {
     this.dataDir = dataDir;
@@ -24,10 +25,14 @@ export class Recorder<T = any> {
     this.tickRate = config.tickRate || TICK_MS;
   }
 
-  private getCurrentTick(): number {
-    if (this.state !== "recording") return 0;
+  getState(): RecorderState {
+    return this.state;
+  }
+
+  getCurrentTick(): number {
+    if (this.state !== RecorderState.Recording) return 0;
     const elapsed = performance.now() - this.startTime - this.pausedDuration;
-    return Math.floor(elapsed * this.tickRate / 1000);
+    return Math.max(1, Math.floor((elapsed * this.tickRate) / 1000));
   }
 
   async start(): Promise<void> {
@@ -40,69 +45,87 @@ export class Recorder<T = any> {
     this.pausedDuration = 0;
     this.lastFlushTick = 0;
 
+    const defaultMeta: ReplayMeta = {
+      createdAt: new Date().toISOString(),
+      tickRate: this.tickRate,
+      segmentSize: this.segmentSize,
+      totalTicks: 0,
+      totalDuration: 0,
+    };
+
     await fs.writeFile(
       path.join(this.dataDir, HEADER_NAME),
-      JSON.stringify({
-        createdAt: new Date().toISOString(),
-        tickRate: this.tickRate,
-        segmentSize: this.segmentSize,
-        totalTicks: 0,
-      } as ReplayMeta)
+      JSON.stringify(defaultMeta)
     );
 
-    this.state = "recording";
+    this.state = RecorderState.Recording;
   }
 
   async record(data: T): Promise<void> {
-    if (this.state !== "recording") {
+    if (this.state !== RecorderState.Recording) {
       throw new Error(`Cannot record in ${this.state} state`);
     }
 
     const currentTick = this.getCurrentTick();
     this.currentSegment.set(currentTick, data);
 
-    if (currentTick - this.lastFlushTick >= this.segmentSize) {
+    if (currentTick % this.segmentSize === 0 || currentTick - this.lastFlushTick >= this.segmentSize) {
       await this.flushSegment();
       this.lastFlushTick = currentTick;
     }
   }
 
   async pause(): Promise<void> {
-    if (this.state !== "recording") {
+    if (this.state === RecorderState.Paused) {
+      return;
+    }
+
+    if (this.state !== RecorderState.Recording) {
       throw new Error(`Cannot pause in ${this.state} state`);
     }
 
     await this.flushSegment();
     this.pauseStartTime = performance.now();
-    this.state = "paused";
+    this.state = RecorderState.Paused;
   }
 
   async resume(): Promise<void> {
-    if (this.state !== "paused") {
-      throw new Error(`Cannot resume in ${this.state} state`);
+    if (this.state === RecorderState.Paused) {
+      this.pausedDuration += performance.now() - this.pauseStartTime;
+      this.state = RecorderState.Recording;
+    } else if (this.state !== RecorderState.Recording) {
+      throw new Error(`Cannot pause in ${this.state} state`);
     }
-
-    this.pausedDuration += performance.now() - this.pauseStartTime;
-    this.state = "recording";
   }
 
   private async flushSegment(): Promise<void> {
-    const ticks = Array.from(this.currentSegment.keys()).sort((a, b) => a - b);
-    if (ticks.length === 0) return;
+    if (this.isFlushing) return;
+    this.isFlushing = true;
 
-    const segmentData = {
-      firstTick: ticks[0],
-      lastTick: ticks[ticks.length - 1],
-      data: Object.fromEntries(this.currentSegment),
-    };
 
-    await fs.writeFile(
-      path.join(this.dataDir, `segment_${this.segmentIndex}.dat`),
-      pack(segmentData)
-    );
+    try {
+      const ticks = Array.from(this.currentSegment.keys()).sort((a, b) => a - b);
+      if (ticks.length === 0) return;
 
-    this.currentSegment.clear();
-    this.segmentIndex++;
+      const segmentData = {
+        firstTick: ticks[0],
+        lastTick: ticks[ticks.length - 1],
+        data: Object.fromEntries(this.currentSegment),
+      };
+
+      await fs.writeFile(
+        path.join(this.dataDir, `segment_${this.segmentIndex}.dat`),
+        pack(segmentData)
+      );
+
+      this.currentSegment.clear();
+      this.segmentIndex++;
+
+    }
+    finally {
+      this.isFlushing = false;
+    }
+
   }
 
   async stop(): Promise<ReplayMeta> {
@@ -110,21 +133,27 @@ export class Recorder<T = any> {
       throw new Error("Cannot stop when not started");
     }
 
-    if (this.state === "paused") {
+    if (this.state === RecorderState.Paused) {
       this.pausedDuration += performance.now() - this.pauseStartTime;
     }
 
     await this.flushSegment();
     const finalTick = this.getCurrentTick();
+    const totalDuration = performance.now() - this.startTime;
 
     const meta: ReplayMeta = JSON.parse(
       await fs.readFile(path.join(this.dataDir, HEADER_NAME), "utf-8")
     );
 
     meta.totalTicks = finalTick;
-    await fs.writeFile(path.join(this.dataDir, HEADER_NAME), JSON.stringify(meta));
+    // 新增总时长记录（毫秒）
+    meta.totalDuration = totalDuration;
+    await fs.writeFile(
+      path.join(this.dataDir, HEADER_NAME),
+      JSON.stringify(meta)
+    );
 
-    this.state = "idle";
+    this.state = RecorderState.Idle;
     return meta;
   }
 }

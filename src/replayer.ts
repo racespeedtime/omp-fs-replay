@@ -2,7 +2,14 @@ import { performance } from "node:perf_hooks";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { unpack } from "msgpackr";
-import { ReplayMeta, TickMeta, PlayOptions, ReplayerState } from "./types";
+import {
+  ReplayMeta,
+  TickMeta,
+  PlayOptions,
+  ReplayerState,
+  RangeQueryOptions,
+  TickData,
+} from "./types";
 import { HEADER_NAME } from "./constants";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -106,10 +113,17 @@ export class Replayer<T = any> {
 
     const delay = Math.max(0, (nextTickTime - now) / this.currentSpeed);
 
-    this.currentTimer = setTimeout(() => {
+    if (delay < 4) {
       this.currentTick++;
       this.processTickAndScheduleNext();
-    }, delay);
+    }
+    else {
+      this.currentTimer = setTimeout(() => {
+        this.currentTick++;
+        this.processTickAndScheduleNext();
+      }, delay);
+    }
+
   }
 
   private processTickAndScheduleNext(): void {
@@ -201,5 +215,73 @@ export class Replayer<T = any> {
       this.currentTimer = null;
     }
     this.state = ReplayerState.Idle;
+  }
+
+  async getRangeData(options: RangeQueryOptions): Promise<TickData<T>[]> {
+    await this.init();
+
+    // 解析范围参数
+    const [startTick, endTick] = this.normalizeRange(options);
+
+    // 预加载所有涉及的segment
+    await this.preloadSegmentsForRange(startTick, endTick);
+
+    // 收集数据
+    return this.collectTickData(
+      startTick,
+      endTick,
+      options.includePartialTicks
+    );
+  }
+
+  private normalizeRange(options: RangeQueryOptions): [number, number] {
+    if (options.timeRange) {
+      const [startTime, endTime] = options.timeRange;
+      return [
+        Math.floor((startTime * this.meta.tickRate) / 1000),
+        Math.floor((endTime * this.meta.tickRate) / 1000),
+      ];
+    } else if (options.tickRange) {
+      return [
+        Math.max(0, options.tickRange[0]),
+        Math.min(this.meta.totalTicks - 1, options.tickRange[1]),
+      ];
+    }
+    throw new Error("必须提供timeRange或tickRange");
+  }
+
+  private async preloadSegmentsForRange(startTick: number, endTick: number) {
+    const startSegment = Math.floor(startTick / this.meta.segmentSize);
+    const endSegment = Math.floor(endTick / this.meta.segmentSize);
+
+    await Promise.all(
+      Array.from({ length: endSegment - startSegment + 1 }, (_, i) =>
+        this.loadSegment(startSegment + i)
+      )
+    );
+  }
+
+  private collectTickData(
+    startTick: number,
+    endTick: number,
+    includePartial = false
+  ): TickData<T>[] {
+    const result: TickData<T>[] = [];
+    for (let tick = startTick; tick <= endTick; tick++) {
+      const data = this.getTickData(tick);
+      if (data) {
+        result.push(data);
+      } else if (includePartial) {
+        result.push({
+          data: null as unknown as T,
+          meta: {
+            tick,
+            time: (tick / this.meta.tickRate) * 1000,
+            segmentIndex: Math.floor(tick / this.meta.segmentSize),
+          },
+        });
+      }
+    }
+    return result;
   }
 }
