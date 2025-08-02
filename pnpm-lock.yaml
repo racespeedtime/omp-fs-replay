@@ -11,6 +11,9 @@ importers:
       '@infernus/core':
         specifier: ^0.11.14
         version: 0.11.14
+      '@infernus/raknet':
+        specifier: ^0.11.2
+        version: 0.11.2(@infernus/core@0.11.14)
       msgpackr:
         specifier: ^1.11.5
         version: 1.11.5
@@ -200,6 +203,11 @@ packages:
 
   '@infernus/core@0.11.14':
     resolution: {integrity: sha512-RdqNFRwFlx0C4ZTsaczbjHVtM1DiQcvU3zU2GstBKjDont5J0sTaU5gEHjvnK8khDsQ4vFsGRdIRbMOli2QnWQ==}
+
+  '@infernus/raknet@0.11.2':
+    resolution: {integrity: sha512-h8MarnhyVxWnWmHdVb/UMYVOqzgasWMXsHCzOhCBmppDXL0ltqb5B1L68ISvviLD2fUwVvBn/iDcvrm9JXYiUg==}
+    peerDependencies:
+      '@infernus/core': ^0.11.7
 
   '@infernus/types@0.1.0':
     resolution: {integrity: sha512-+TTq9TTGrZJZfln0bEhEKaO6ZZxk23deP+LxIT3822eMa6l1U1rNUApxBC95cICbz8hDqzQRYTv6/sX2mgCLPg==}
@@ -1742,6 +1750,10 @@ snapshots:
   '@infernus/core@0.11.14':
     dependencies:
       iconv-lite: 0.6.3
+
+  '@infernus/raknet@0.11.2(@infernus/core@0.11.14)':
+    dependencies:
+      '@infernus/core': 0.11.14
 
   '@infernus/types@0.1.0': {}
 
